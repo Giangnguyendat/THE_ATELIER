@@ -23,10 +23,17 @@ try {
     // Tạo DSN chuẩn cho MySQL PDO
     $dsn = "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4";
     
+    // KIỂM TRA ĐƯỜNG DẪN FILE CA.PEM
+    // Ưu tiên tìm trong thư mục bảo mật của Render (/etc/secrets/)
+    if (file_exists('/etc/secrets/ca.pem')) {
+        $ca_path = '/etc/secrets/ca.pem';
+    } else {
+        // Nếu không có (chạy ở máy local), tìm ở thư mục hiện tại
+        $ca_path = __DIR__ . '/ca.pem';
+    }
+
     $options = [
-        // Trỏ tới file ca.pem nằm cùng thư mục
-        PDO::MYSQL_ATTR_SSL_CA => __DIR__ . '/ca.pem',
-        // Bỏ qua kiểm tra tên miền (giúp tránh lỗi chứng chỉ trên môi trường cloud)
+        PDO::MYSQL_ATTR_SSL_CA => $ca_path,
         PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => false,
     ];
 
@@ -38,7 +45,7 @@ try {
     die("Kết nối database thất bại: " . $e->getMessage());
 }
 
-// ... (Các hàm bên dưới giữ nguyên)
+// Hàm kiểm tra đăng nhập
 function isLoggedIn() {
     return isset($_SESSION['user_id']);
 }
