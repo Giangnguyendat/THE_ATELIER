@@ -40,8 +40,10 @@ include 'includes/admin_header.php';
 if (!$tableExists) {
     ?>
     <div style="max-width:720px;margin:2rem auto;padding:2rem;background:#fff;border:1px solid #efeae0;border-radius:12px;box-shadow:0 4px 20px rgba(36,33,29,0.06);">
-        <div style="font-size:3rem;text-align:center;margin-bottom:0.75rem;">⚠️</div>
-        <h2 style="font-family:'Playfair Display',Georgia,serif;font-size:1.6rem;color:#24211d;margin:0 0 0.75rem;text-align:center;">
+        <div style="font-size:3rem;text-align:center;margin-bottom:0.75rem;color:#a8461f;">
+            <i class="ph ph-warning-circle"></i>
+        </div>
+        <h2 style="font-family:'Fraunces',Georgia,serif;font-size:1.6rem;color:#24211d;margin:0 0 0.75rem;text-align:center;">
             Bảng thông báo chưa được tạo
         </h2>
         <p style="text-align:center;color:#8a8377;font-size:0.9rem;margin:0 0 1.5rem;">
@@ -54,7 +56,7 @@ if (!$tableExists) {
     title VARCHAR(255) NOT NULL,
     message TEXT,
     link VARCHAR(255) NULL,
-    icon VARCHAR(20) DEFAULT '🔔',
+    icon VARCHAR(255) DEFAULT NULL,
     priority ENUM('low','normal','high','urgent') DEFAULT 'normal',
     is_read TINYINT(1) DEFAULT 0,
     ref_id INT NULL,
@@ -96,7 +98,7 @@ $validTypes = [
     'return_new', 'return_approved',
     'review_new', 'review_low',
     'tax_warning', 'discount_event',
-    'stock_low',   // ← mới
+    'stock_low',
     'system',
 ];
 
@@ -108,7 +110,7 @@ if (in_array($filter, $validTypes, true)) {
 $whereSQL = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 
 /* ============================================================
-   LẤY DỮ LIỆU — bọc try-catch
+   LẤY DỮ LIỆU
    ============================================================ */
 $notifications = [];
 $counts        = ['all' => 0];
@@ -137,20 +139,20 @@ try {
 $unread = getUnreadNotificationCount();
 
 /* ============================================================
-   MAP
+   MAP ICONS (Phosphor)
    ============================================================ */
 $typeLabelMap = [
-    'order_new'       => ['Đơn hàng mới',    '🛒', '#c2410c'],
-    'order_confirmed' => ['Xác nhận đơn',    '✅', '#1d4ed8'],
-    'order_cancelled' => ['Đơn hủy',         '❌', '#b91c1c'],
-    'return_new'      => ['Yêu cầu hoàn',    '🔄', '#7c3216'],
-    'return_approved' => ['Duyệt hoàn',      '✓',  '#15803d'],
-    'review_new'      => ['Đánh giá mới',    '⭐', '#a8461f'],
-    'review_low'      => ['Đánh giá thấp',   '⚠️', '#b91c1c'],
-    'tax_warning'     => ['Thuế',            '📊', '#1d4ed8'],
-    'discount_event'  => ['Giảm giá',        '🎉', '#7c3216'],
-    'stock_low'       => ['Sắp hết hàng',    '📦', '#c2410c'],
-    'system'          => ['Hệ thống',        '⚙️', '#57534e'],
+    'order_new'       => ['Đơn hàng mới',    'ph-shopping-cart',          '#c2410c'],
+    'order_confirmed' => ['Xác nhận đơn',    'ph-check-circle',           '#1d4ed8'],
+    'order_cancelled' => ['Đơn hủy',         'ph-x-circle',               '#b91c1c'],
+    'return_new'      => ['Yêu cầu hoàn',    'ph-arrow-counter-clockwise','#7c3216'],
+    'return_approved' => ['Duyệt hoàn',      'ph-check-fat',              '#15803d'],
+    'review_new'      => ['Đánh giá mới',    'ph-star',                   '#a8461f'],
+    'review_low'      => ['Đánh giá thấp',   'ph-warning-circle',         '#b91c1c'],
+    'tax_warning'     => ['Thuế',            'ph-chart-bar',              '#1d4ed8'],
+    'discount_event'  => ['Giảm giá',        'ph-confetti',               '#7c3216'],
+    'stock_low'       => ['Sắp hết hàng',    'ph-package',                '#c2410c'],
+    'system'          => ['Hệ thống',        'ph-gear',                   '#57534e'],
 ];
 
 $priorityMap = [
@@ -169,7 +171,7 @@ $priorityMap = [
         border-bottom:1px solid var(--c-border); gap:1rem; flex-wrap:wrap;
     }
     .adm-notif .admin-page-head h1 {
-        font-family:'Playfair Display',Georgia,serif; font-size:2rem; margin:0; color:#24211d;
+        font-family:'Fraunces',Georgia,serif; font-size:2rem; margin:0; color:#24211d;
     }
     .adm-notif .admin-page-head .subtitle { font-size:0.85rem; color:var(--c-text-muted); margin-top:0.4rem; }
 
@@ -220,7 +222,7 @@ $priorityMap = [
     .adm-notif .notif-icon {
         width:44px; height:44px; border-radius:12px; flex-shrink:0;
         display:flex; align-items:center; justify-content:center;
-        font-size:1.25rem; background:#faf8f4;
+        font-size:1.35rem; background:#faf8f4;
     }
     .adm-notif .notif-body { flex:1; min-width:0; }
     .adm-notif .notif-top {
@@ -247,7 +249,7 @@ $priorityMap = [
         text-align:center; padding:4rem 1.5rem; color:var(--c-text-muted);
         background:#fff; border:1px solid var(--c-border); border-radius:12px;
     }
-    .adm-notif .adm-empty-icon { font-size:3rem; margin-bottom:0.75rem; opacity:0.4; }
+    .adm-notif .adm-empty-icon { font-size:3rem; margin-bottom:0.75rem; opacity:0.4; color:#a8461f; }
 
     .adm-notif .btn-mark-all {
         padding:0.6rem 1.1rem; background:#fff; color:#24211d;
@@ -267,17 +269,17 @@ $priorityMap = [
                 Bạn có <b style="color:#a8461f;"><?php echo (int)$unread; ?></b> thông báo chưa đọc
             </div>
         </div>
-                <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
             <button type="button" id="btnScanStock" class="btn-mark-all" style="background:#a8461f;color:#fff;border-color:#a8461f;">
-                📦 Quét SP sắp hết
+                <i class="ph ph-package"></i> Quét SP sắp hết
             </button>
             <button type="button" id="btnSeedTest" class="btn-mark-all">
-                🧪 Tạo dữ liệu mẫu
+                <i class="ph ph-flask"></i> Tạo dữ liệu mẫu
             </button>
             <?php if ($unread > 0): ?>
                 <a href="notifications.php?mark_all=1" class="btn-mark-all"
                    onclick="return confirm('Đánh dấu tất cả đã đọc?');">
-                    ✓ Đánh dấu tất cả đã đọc
+                    <i class="ph ph-checks"></i> Đánh dấu tất cả đã đọc
                 </a>
             <?php endif; ?>
         </div>
@@ -286,12 +288,12 @@ $priorityMap = [
     <!-- TABS -->
     <div class="adm-tabs">
         <a href="notifications.php" class="adm-tab <?php echo $filter === '' ? 'active' : ''; ?>">
-            📋 Tất cả <span class="cnt"><?php echo (int)$counts['all']; ?></span>
+            <i class="ph ph-list"></i> Tất cả <span class="cnt"><?php echo (int)$counts['all']; ?></span>
         </a>
         <?php foreach ($typeLabelMap as $tKey => $tInfo): ?>
             <a href="notifications.php?type=<?php echo $tKey; ?>"
                class="adm-tab <?php echo $filter === $tKey ? 'active' : ''; ?>">
-                <?php echo $tInfo[1]; ?> <?php echo $tInfo[0]; ?>
+                <i class="ph <?php echo $tInfo[1]; ?>"></i> <?php echo $tInfo[0]; ?>
                 <?php if (!empty($counts[$tKey])): ?>
                     <span class="cnt"><?php echo (int)$counts[$tKey]; ?></span>
                 <?php endif; ?>
@@ -302,7 +304,7 @@ $priorityMap = [
     <!-- LIST -->
     <?php if (empty($notifications)): ?>
         <div class="adm-empty">
-            <div class="adm-empty-icon">🔔</div>
+            <div class="adm-empty-icon"><i class="ph ph-bell-slash"></i></div>
             <div style="font-size:1rem;font-weight:600;color:#24211d;margin-bottom:0.35rem;">
                 Không có thông báo nào
             </div>
@@ -311,10 +313,24 @@ $priorityMap = [
     <?php else: ?>
         <div class="adm-notif-list">
             <?php foreach ($notifications as $n):
-                $tInfo  = $typeLabelMap[$n['type']] ?? ['Khác', '🔔', '#57534e'];
+                $tInfo  = $typeLabelMap[$n['type']] ?? ['Khác', 'ph-bell', '#57534e'];
                 $pInfo  = $priorityMap[$n['priority']] ?? $priorityMap['normal'];
                 $isNew  = $n['is_read'] == 0;
                 $href   = !empty($n['link']) ? $n['link'] : '#';
+
+                // Xử lý icon thông minh
+                $rawIcon = $n['icon'] ?: $tInfo[1];
+                $iconHtml = '';
+                if (strpos($rawIcon, '<') !== false) {
+                    // Nếu DB đã lưu thẻ HTML (VD: <i class="..."></i>)
+                    $iconHtml = $rawIcon;
+                } elseif (strpos($rawIcon, 'ph-') === 0) {
+                    // Nếu DB lưu tên class Phosphor (VD: ph-toggle-right)
+                    $iconHtml = '<i class="ph ' . htmlspecialchars($rawIcon) . '"></i>';
+                } else {
+                    // Fallback cho Emoji cũ trong DB
+                    $iconHtml = htmlspecialchars($rawIcon);
+                }
             ?>
                 <a href="<?php echo htmlspecialchars($href); ?>"
                    class="notif-card <?php echo $isNew ? 'unread' : ''; ?>"
@@ -322,7 +338,7 @@ $priorityMap = [
                    data-read="<?php echo $isNew ? '0' : '1'; ?>"
                    onclick="markRead(<?php echo (int)$n['id']; ?>, this);">
                     <div class="notif-icon" style="color:<?php echo $tInfo[2]; ?>;background:<?php echo $tInfo[2]; ?>18;">
-                        <?php echo htmlspecialchars($n['icon'] ?: $tInfo[1]); ?>
+                        <?php echo $iconHtml; ?>
                     </div>
                     <div class="notif-body">
                         <div class="notif-top">
@@ -360,9 +376,9 @@ function markRead(id, el) {
    ============================================================ */
 document.getElementById('btnScanStock').addEventListener('click', function () {
     var btn = this;
-    var old = btn.textContent;
+    var old = btn.innerHTML;
     btn.disabled = true;
-    btn.textContent = '⏳ Đang quét...';
+    btn.innerHTML = '<i class="ph ph-spinner-gap"></i> Đang quét...';
 
     var fd = new FormData();
     fd.append('csrf_token', '<?php echo $_SESSION['csrf_token']; ?>');
@@ -370,17 +386,17 @@ document.getElementById('btnScanStock').addEventListener('click', function () {
     fetch('run_stock_check.php', { method: 'POST', body: fd })
         .then(function (r) { return r.json(); })
         .then(function (d) {
-            alert(d.msg || (d.ok ? '✅ Xong' : '❌ Lỗi'));
+            alert(d.msg || (d.ok ? 'Thành công' : 'Lỗi'));
             if (d.ok) location.reload();
             else {
                 btn.disabled = false;
-                btn.textContent = old;
+                btn.innerHTML = old;
             }
         })
         .catch(function () {
-            alert('❌ Không kết nối được server');
+            alert('Không kết nối được server');
             btn.disabled = false;
-            btn.textContent = old;
+            btn.innerHTML = old;
         });
 });
 
@@ -391,9 +407,9 @@ document.getElementById('btnSeedTest').addEventListener('click', function () {
     if (!confirm('Tạo 12 thông báo mẫu để test giao diện?\n(Nên xóa sau khi test xong)')) return;
 
     var btn = this;
-    var old = btn.textContent;
+    var old = btn.innerHTML;
     btn.disabled = true;
-    btn.textContent = '⏳ Đang tạo...';
+    btn.innerHTML = '<i class="ph ph-spinner-gap"></i> Đang tạo...';
 
     var fd = new FormData();
     fd.append('csrf_token', '<?php echo $_SESSION['csrf_token']; ?>');
@@ -401,17 +417,17 @@ document.getElementById('btnSeedTest').addEventListener('click', function () {
     fetch('seed_test_notifications.php', { method: 'POST', body: fd })
         .then(function (r) { return r.json(); })
         .then(function (d) {
-            alert(d.msg || (d.ok ? '✅ Xong' : '❌ Lỗi'));
+            alert(d.msg || (d.ok ? 'Thành công' : 'Lỗi'));
             if (d.ok) location.reload();
             else {
                 btn.disabled = false;
-                btn.textContent = old;
+                btn.innerHTML = old;
             }
         })
         .catch(function () {
-            alert('❌ Không kết nối được server');
+            alert('Không kết nối được server');
             btn.disabled = false;
-            btn.textContent = old;
+            btn.innerHTML = old;
         });
 });
 </script>

@@ -81,11 +81,15 @@ try {
             </div>
             <?php if ($bannerCount > 1): ?>
             <button type="button" class="banner__arrow banner__arrow--prev" id="bannerPrev" aria-label="Ảnh trước">
-                <i class="ph ph-caret-left"></i>
-            </button>
-            <button type="button" class="banner__arrow banner__arrow--next" id="bannerNext" aria-label="Ảnh sau">
-                <i class="ph ph-caret-right"></i>
-            </button>
+    <svg width="20" height="20" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">
+        <path d="M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z"/>
+    </svg>
+</button>
+<button type="button" class="banner__arrow banner__arrow--next" id="bannerNext" aria-label="Ảnh sau">
+    <svg width="20" height="20" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">
+        <path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/>
+    </svg>
+</button>
             <div class="banner__dots" id="bannerDots" role="tablist" aria-label="Chọn banner"></div>
             <?php endif; ?>
         </div>

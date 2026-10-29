@@ -68,11 +68,18 @@ $statusMap = [
 ?>
 
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
+
     .adm-sup {
         --c-primary: #a8461f;
         --c-border:  #efeae0;
         --c-muted:   #8a8377;
+        --c-ink:     #1c1b19;
+        --c-white:   #fffdf9;
+        font-family: 'Inter', sans-serif;
     }
+
+    .adm-sup .ph { vertical-align: -0.125em; }
 
     /* Page head */
     .adm-sup .admin-page-head {
@@ -81,8 +88,8 @@ $statusMap = [
         border-bottom:1px solid var(--c-border); gap:1rem; flex-wrap:wrap;
     }
     .adm-sup .admin-page-head h1 {
-        font-family:'Playfair Display',Georgia,serif;
-        font-size:2rem; margin:0; color:#24211d;
+        font-family:'Fraunces', Georgia, serif;
+        font-size:2rem; font-weight:500; margin:0; color:var(--c-ink);
     }
     .adm-sup .admin-page-head .subtitle {
         font-size:0.85rem; color:var(--c-muted); margin-top:0.4rem;
@@ -97,7 +104,7 @@ $statusMap = [
     .adm-sup .adm-tab {
         padding:0.5rem 0.95rem; background:#fff; border:1px solid var(--c-border);
         border-radius:8px; font-size:0.8rem; font-weight:600;
-        color:#24211d; text-decoration:none; transition:all 0.15s;
+        color:var(--c-ink); text-decoration:none; transition:all 0.15s;
         display:inline-flex; align-items:center; gap:0.4rem;
     }
     .adm-sup .adm-tab:hover { background:#fbf9f5; }
@@ -122,7 +129,7 @@ $statusMap = [
     .adm-sup .adm-filter input,
     .adm-sup .adm-filter select {
         width:100%; padding:0.65rem 0.85rem;
-        font-size:0.88rem; font-family:inherit; color:#24211d;
+        font-size:0.88rem; font-family:inherit; color:var(--c-ink);
         background:#fbf9f5; border:1px solid var(--c-border);
         border-radius:8px; outline:none; box-sizing:border-box;
     }
@@ -135,14 +142,14 @@ $statusMap = [
         padding:0.65rem 1.1rem; border-radius:8px;
         font-weight:600; font-size:0.82rem; border:none;
         cursor:pointer; text-decoration:none;
-        transition:all 0.15s;
+        transition:all 0.15s; display:inline-flex; align-items:center; gap:6px;
     }
     .adm-sup .adm-filter .btn-adm--primary {
         background:var(--c-primary); color:#fff;
     }
     .adm-sup .adm-filter .btn-adm--primary:hover { background:#8f3a18; }
     .adm-sup .adm-filter .btn-adm--ghost {
-        background:#fff; color:#24211d; border:1px solid var(--c-border);
+        background:#fff; color:var(--c-ink); border:1px solid var(--c-border);
     }
     .adm-sup .adm-filter .btn-adm--ghost:hover { background:#fbf9f5; }
 
@@ -174,13 +181,13 @@ $statusMap = [
     .adm-sup .sup-icon {
         width:44px; height:44px; border-radius:12px; flex-shrink:0;
         display:flex; align-items:center; justify-content:center;
-        font-size:1.25rem; background:#faf8f4;
+        font-size:1.4rem; background:#faf8f4; color:var(--c-primary);
     }
     .adm-sup .sup-body { flex:1; min-width:0; }
     .adm-sup .sup-top {
         display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.35rem;
     }
-    .adm-sup .sup-title { font-weight:700; color:#24211d; font-size:0.95rem; }
+    .adm-sup .sup-title { font-weight:700; color:var(--c-ink); font-size:0.95rem; }
     .adm-sup .sup-time {
         font-size:0.72rem; color:var(--c-muted);
         font-family:'IBM Plex Mono',monospace; margin-left:auto;
@@ -215,7 +222,7 @@ $statusMap = [
         text-align:center; padding:4rem 1.5rem; color:var(--c-muted);
         background:#fff; border:1px solid var(--c-border); border-radius:12px;
     }
-    .adm-sup .adm-empty-icon { font-size:3rem; margin-bottom:0.75rem; opacity:0.4; }
+    .adm-sup .adm-empty-icon { font-size:3rem; margin-bottom:0.75rem; opacity:0.4; color:#d4c9b3; }
 
     /* ============ MODAL ============ */
     .adm-sup .adm-modal {
@@ -241,14 +248,14 @@ $statusMap = [
     .adm-sup .adm-modal__close {
         position:absolute; top:1rem; right:1rem;
         width:36px; height:36px; border-radius:50%; border:none;
-        background:#f5f2ec; color:#24211d; font-size:1.3rem; line-height:1;
+        background:#f5f2ec; color:var(--c-ink); font-size:1.3rem; line-height:1;
         cursor:pointer; display:flex; align-items:center; justify-content:center;
         transition:all 0.15s;
     }
     .adm-sup .adm-modal__close:hover { background:#e8e0d0; transform:rotate(90deg); }
     .adm-sup .adm-modal__title {
-        font-family:'Playfair Display',Georgia,serif;
-        font-size:1.5rem; margin:0 0 1.5rem; color:#24211d;
+        font-family:'Fraunces',Georgia,serif;
+        font-size:1.5rem; font-weight:500; margin:0 0 1.5rem; color:var(--c-ink);
         padding-right:3rem; letter-spacing:-0.01em;
     }
 
@@ -264,11 +271,14 @@ $statusMap = [
     .adm-sup .sup-info-box__label {
         font-size:0.68rem; letter-spacing:0.1em; text-transform:uppercase;
         color:#8a8377; margin-bottom:0.5rem; font-weight:700;
+        display:flex; align-items:center; gap:6px;
     }
+    .adm-sup .sup-info-box__label i { font-size:1rem; }
     .adm-sup .sup-info-box__value {
-        font-size:0.9rem; color:#24211d; line-height:1.7;
+        font-size:0.9rem; color:var(--c-ink); line-height:1.7;
     }
-    .adm-sup .sup-info-box__value a { color:#a8461f; }
+    .adm-sup .sup-info-box__value a { color:var(--c-primary); text-decoration:none; }
+    .adm-sup .sup-info-box__value a:hover { text-decoration:underline; }
 
     .adm-sup .sup-message {
         background:#fffaf5; border:1px solid #f5c9a8;
@@ -277,9 +287,11 @@ $statusMap = [
     .adm-sup .sup-message__label {
         font-size:0.68rem; letter-spacing:0.1em; text-transform:uppercase;
         color:#7c3216; margin-bottom:0.5rem; font-weight:700;
+        display:flex; align-items:center; gap:6px;
     }
+    .adm-sup .sup-message__label i { font-size:1rem; }
     .adm-sup .sup-message__body {
-        font-size:0.9rem; color:#24211d; line-height:1.7; white-space:pre-wrap;
+        font-size:0.9rem; color:var(--c-ink); line-height:1.7; white-space:pre-wrap;
     }
 
     /* Reply form */
@@ -292,6 +304,7 @@ $statusMap = [
         color:#166534; font-weight:700; margin-bottom:1rem;
         display:flex; align-items:center; gap:0.5rem;
     }
+    .adm-sup .sup-reply__head i { font-size:1.1rem; }
     .adm-sup .sup-reply label {
         display:block; font-size:0.75rem; font-weight:600;
         color:#374151; margin-bottom:6px;
@@ -301,7 +314,7 @@ $statusMap = [
     .adm-sup .sup-reply select {
         width:100%; padding:0.75rem 1rem;
         border:1px solid #d1d5db; border-radius:8px;
-        font-size:0.9rem; font-family:inherit; color:#24211d;
+        font-size:0.9rem; font-family:inherit; color:var(--c-ink);
         background:#fff; box-sizing:border-box;
         transition:border-color 0.15s;
     }
@@ -322,6 +335,7 @@ $statusMap = [
         flex:1; padding:0.75rem; border-radius:8px; border:none;
         font-size:0.88rem; font-weight:600; cursor:pointer;
         transition:all 0.15s; font-family:inherit;
+        display:inline-flex; align-items:center; justify-content:center; gap:6px;
     }
     .adm-sup .btn-adm--success {
         background:#166534; color:#fff;
@@ -336,10 +350,13 @@ $statusMap = [
     .adm-sup .sup-reply-err {
         color:#b91c1c; font-size:0.82rem; margin:0.5rem 0 0;
         min-height:1em; font-weight:600;
+        display:flex; align-items:center; gap:4px;
     }
     .adm-sup .sup-reply-hint {
         font-size:0.78rem; color:#4b5563; margin-top:0.5rem; line-height:1.55;
+        display:flex; align-items:flex-start; gap:6px;
     }
+    .adm-sup .sup-reply-hint i { font-size:1rem; color:#166534; margin-top:2px; }
 
     /* Reply history */
     .adm-sup .sup-reply-history {
@@ -349,7 +366,9 @@ $statusMap = [
     .adm-sup .sup-reply-history__label {
         font-size:0.68rem; letter-spacing:0.1em; text-transform:uppercase;
         color:#1d4ed8; font-weight:700; margin-bottom:0.5rem;
+        display:flex; align-items:center; gap:6px;
     }
+    .adm-sup .sup-reply-history__label i { font-size:1rem; }
     .adm-sup .sup-reply-history__meta {
         font-size:0.78rem; color:#6b7280; margin-bottom:0.5rem;
         font-family:'IBM Plex Mono',monospace;
@@ -368,9 +387,11 @@ $statusMap = [
         box-shadow:0 10px 25px rgba(0,0,0,0.15);
         z-index:99999; opacity:0;
         transition:all 0.3s; max-width:90vw; font-weight:600;
+        display:flex; align-items:center; gap:8px;
     }
     .adm-sup .adm-toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
     .adm-sup .adm-toast.error { background:#b91c1c; }
+    .adm-sup .adm-toast i { font-size:1.1rem; }
 
     @media (max-width:720px) {
         .adm-sup .admin-page-head h1 { font-size:1.6rem; }
@@ -396,7 +417,7 @@ $statusMap = [
     <!-- TABS -->
     <div class="adm-tabs">
         <a href="support.php" class="adm-tab <?php echo $filter === '' ? 'active' : ''; ?>">
-            📋 Tất cả <span class="cnt"><?php echo (int)$counts['all']; ?></span>
+            <i class="ph ph-list"></i> Tất cả <span class="cnt"><?php echo (int)$counts['all']; ?></span>
         </a>
         <?php foreach ($statusMap as $k => $v): ?>
             <a href="support.php?status=<?php echo $k; ?>"
@@ -414,7 +435,7 @@ $statusMap = [
         <form method="GET">
             <div style="flex:2;min-width:240px;">
                 <label style="display:block;font-size:0.7rem;text-transform:uppercase;color:var(--c-muted);margin-bottom:0.35rem;font-weight:700;letter-spacing:0.06em;">
-                    🔍 Tìm kiếm
+                    <i class="ph ph-magnifying-glass"></i> Tìm kiếm
                 </label>
                 <input type="text" name="q" value="<?php echo htmlspecialchars($search); ?>"
                        placeholder="Mã YC, tên, email, nội dung...">
@@ -433,9 +454,13 @@ $statusMap = [
                 </select>
             </div>
             <div style="display:flex;gap:0.5rem;">
-                <button type="submit" class="btn-adm btn-adm--primary">Lọc</button>
+                <button type="submit" class="btn-adm btn-adm--primary">
+                    <i class="ph ph-funnel"></i> Lọc
+                </button>
                 <?php if ($search !== '' || $filter !== ''): ?>
-                    <a href="support.php" class="btn-adm btn-adm--ghost">Xóa lọc</a>
+                    <a href="support.php" class="btn-adm btn-adm--ghost">
+                        <i class="ph ph-x"></i> Xóa lọc
+                    </a>
                 <?php endif; ?>
             </div>
         </form>
@@ -444,7 +469,7 @@ $statusMap = [
     <!-- LIST -->
     <?php if (empty($requests)): ?>
         <div class="adm-empty">
-            <div class="adm-empty-icon">📭</div>
+            <div class="adm-empty-icon"><i class="ph ph-tray"></i></div>
             <div style="font-size:1rem;font-weight:600;color:#24211d;margin-bottom:0.35rem;">
                 Không có yêu cầu nào
             </div>
@@ -455,20 +480,25 @@ $statusMap = [
             <?php foreach ($requests as $r):
                 $isNew   = $r['status'] === 'new';
                 $stInfo  = $statusMap[$r['status']] ?? ['Không rõ', 'adm-badge--gray'];
+                // Chuyển emoji sang Phosphor Icons
                 $iconMap = [
-                    'order'    => '📦', 'return'   => '🔄', 'payment'  => '💳',
-                    'product'  => '👕', 'shipping' => '🚚', 'account'  => '👤',
-                    'other'    => '💬',
+                    'order'    => 'ph-package', 
+                    'return'   => 'ph-arrows-clockwise', 
+                    'payment'  => 'ph-credit-card',
+                    'product'  => 'ph-t-shirt', 
+                    'shipping' => 'ph-truck', 
+                    'account'  => 'ph-user',
+                    'other'    => 'ph-chat-circle',
                 ];
-                $icon = '💬';
+                $iconClass = 'ph-chat-circle';
                 foreach ($iconMap as $k => $v) {
-                    if (stripos($r['subject'], $k) !== false) { $icon = $v; break; }
+                    if (stripos($r['subject'], $k) !== false) { $iconClass = $v; break; }
                 }
             ?>
                 <div class="sup-card <?php echo $isNew ? 'new' : ''; ?>"
                      data-id="<?php echo (int)$r['id']; ?>"
                      onclick="openSupportModal(<?php echo (int)$r['id']; ?>)">
-                    <div class="sup-icon"><?php echo $icon; ?></div>
+                    <div class="sup-icon"><i class="ph <?php echo $iconClass; ?>"></i></div>
                     <div class="sup-body">
                         <div class="sup-top">
                             <span class="sup-title">#SR<?php echo (int)$r['id']; ?> — <?php echo htmlspecialchars($r['name']); ?></span>
@@ -490,11 +520,15 @@ $statusMap = [
     <!-- ============ MODAL ============ -->
     <div class="adm-modal" id="supportModal">
         <div class="adm-modal__box">
-            <button type="button" class="adm-modal__close" onclick="closeSupportModal()">×</button>
-            <h2 class="adm-modal__title" id="supModalTitle">Chi tiết </h2>
+            <button type="button" class="adm-modal__close" onclick="closeSupportModal()">
+                <i class="ph ph-x"></i>
+            </button>
+            <h2 class="adm-modal__title" id="supModalTitle">Chi tiết</h2>
 
             <div id="supModalContent">
-                <p style="text-align:center;padding:2rem;color:#8a8377;">⏳ Đang tải...</p>
+                <p style="text-align:center;padding:2rem;color:#8a8377;">
+                    <i class="ph ph-spinner-gap" style="font-size:2rem; animation: spin 1s linear infinite;"></i><br>Đang tải...
+                </p>
             </div>
         </div>
     </div>
@@ -503,6 +537,10 @@ $statusMap = [
     <div class="adm-toast" id="supToast"></div>
 
 </div>
+
+<style>
+    @keyframes spin { 100% { transform: rotate(360deg); } }
+</style>
 
 <script>
 var supModal   = document.getElementById('supportModal');
@@ -520,7 +558,7 @@ function supEscape(s) {
 }
 
 function supToast(msg, isError) {
-    supToastEl.textContent = msg;
+    supToastEl.innerHTML = (isError ? '<i class="ph ph-warning"></i>' : '<i class="ph ph-check-circle"></i>') + ' ' + supEscape(msg);
     supToastEl.className = 'adm-toast show' + (isError ? ' error' : '');
     clearTimeout(supToast._t);
     supToast._t = setTimeout(function () {
@@ -532,7 +570,7 @@ function supToast(msg, isError) {
 function openSupportModal(id) {
     currentId = id;
     supTitle.textContent = 'Chi tiết yêu cầu #SR' + id;
-    supContent.innerHTML = '<p style="text-align:center;padding:2rem;color:#8a8377;">⏳ Đang tải...</p>';
+    supContent.innerHTML = '<p style="text-align:center;padding:2rem;color:#8a8377;"><i class="ph ph-spinner-gap" style="font-size:2rem; animation: spin 1s linear infinite;"></i><br>Đang tải...</p>';
     supModal.classList.add('show');
     document.body.style.overflow = 'hidden';
 
@@ -582,15 +620,15 @@ function renderSupportDetail(d) {
     html += '<div class="sup-info-grid">';
 
     html += '<div class="sup-info-box">';
-    html += '<div class="sup-info-box__label">👤 Người gửi</div>';
+    html += '<div class="sup-info-box__label"><i class="ph ph-user"></i> Người gửi</div>';
     html += '<div class="sup-info-box__value">';
     html += '<b>' + supEscape(r.name) + '</b><br>';
-    html += '📧 <a href="mailto:' + supEscape(r.email) + '">' + supEscape(r.email) + '</a><br>';
-    if (r.phone) html += '📞 ' + supEscape(r.phone);
+    html += '<i class="ph ph-envelope"></i> <a href="mailto:' + supEscape(r.email) + '">' + supEscape(r.email) + '</a><br>';
+    if (r.phone) html += '<i class="ph ph-phone"></i> ' + supEscape(r.phone);
     html += '</div></div>';
 
     html += '<div class="sup-info-box">';
-    html += '<div class="sup-info-box__label">📋 Yêu cầu</div>';
+    html += '<div class="sup-info-box__label"><i class="ph ph-clipboard-text"></i> Yêu cầu</div>';
     html += '<div class="sup-info-box__value">';
     html += 'Mã: <b>#SR' + r.id + '</b><br>';
     html += 'Chủ đề: <b>' + supEscape(r.subject) + '</b><br>';
@@ -603,14 +641,14 @@ function renderSupportDetail(d) {
 
     /* MESSAGE */
     html += '<div class="sup-message">';
-    html += '<div class="sup-message__label">💬 Nội dung</div>';
+    html += '<div class="sup-message__label"><i class="ph ph-chat-text"></i> Nội dung</div>';
     html += '<div class="sup-message__body">' + supEscape(r.message) + '</div>';
     html += '</div>';
 
     /* REPLY HISTORY */
     if (r.reply_content) {
         html += '<div class="sup-reply-history">';
-        html += '<div class="sup-reply-history__label">📨 Đã trả lời</div>';
+        html += '<div class="sup-reply-history__label"><i class="ph ph-paper-plane-right"></i> Đã trả lời</div>';
         html += '<div class="sup-reply-history__meta">' + supEscape(r.replied_at_fmt || '') + ' → ' + supEscape(r.replied_to_email || r.email) + '</div>';
         html += '<div class="sup-reply-history__body">' + supEscape(r.reply_content) + '</div>';
         html += '</div>';
@@ -618,7 +656,7 @@ function renderSupportDetail(d) {
 
     /* REPLY FORM */
     html += '<div class="sup-reply">';
-    html += '<div class="sup-reply__head">✉️ Trả lời qua email</div>';
+    html += '<div class="sup-reply__head"><i class="ph ph-envelope-simple-open"></i> Trả lời qua email</div>';
 
     html += '<div class="sup-reply__row">';
     html += '<div>';
@@ -628,6 +666,10 @@ function renderSupportDetail(d) {
     html += '<div>';
     html += '<label>Sau khi gửi</label>';
     html += '<select id="supReplyStatus">';
+    // Thêm option mặc định nếu trạng thái hiện tại không nằm trong danh sách
+    if (!['resolved', 'processing', 'closed'].includes(r.status)) {
+        html += '<option value="processing" selected>Đánh dấu đang xử lý</option>';
+    }
     html += '<option value="resolved" ' + (r.status === 'resolved' ? 'selected' : '') + '>Đánh dấu đã giải quyết</option>';
     html += '<option value="processing" ' + (r.status === 'processing' ? 'selected' : '') + '>Đánh dấu đang xử lý</option>';
     html += '<option value="closed" ' + (r.status === 'closed' ? 'selected' : '') + '>Đóng yêu cầu</option>';
@@ -641,15 +683,14 @@ function renderSupportDetail(d) {
     html += '</div>';
 
     html += '<p class="sup-reply-hint">';
-    html += '💡 Nội dung sẽ được gửi dưới dạng <b>email HTML</b> có thương hiệu THE ATELIER. ';
-    html += 'Bạn có thể viết nhiều đoạn — ngắt dòng sẽ được giữ nguyên.';
+    html += '<i class="ph ph-lightbulb"></i> <span>Nội dung sẽ được gửi dưới dạng <b>email HTML</b> có thương hiệu THE ATELIER. Bạn có thể viết nhiều đoạn — ngắt dòng sẽ được giữ nguyên.</span>';
     html += '</p>';
 
     html += '<p class="sup-reply-err" id="supReplyErr"></p>';
 
     html += '<div class="sup-reply__actions">';
-    html += '<button type="button" class="btn-adm btn-adm--ghost" onclick="closeSupportModal()">Hủy</button>';
-    html += '<button type="button" class="btn-adm btn-adm--success" id="supSendReplyBtn" onclick="sendSupportReply()">📨 Gửi trả lời</button>';
+    html += '<button type="button" class="btn-adm btn-adm--ghost" onclick="closeSupportModal()"><i class="ph ph-x"></i> Hủy</button>';
+    html += '<button type="button" class="btn-adm btn-adm--success" id="supSendReplyBtn" onclick="sendSupportReply()"><i class="ph ph-paper-plane-tilt"></i> Gửi trả lời</button>';
     html += '</div>';
 
     html += '</div>';
@@ -665,26 +706,26 @@ function sendSupportReply() {
     var bodyEl  = document.getElementById('supReplyBody');
     var statusEl = document.getElementById('supReplyStatus');
 
-    errEl.textContent = '';
+    errEl.innerHTML = '';
 
     var email  = (emailEl.value || '').trim();
     var body   = (bodyEl.value || '').trim();
     var status = statusEl.value;
 
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
-        errEl.textContent = '⚠ Email không hợp lệ.';
+        errEl.innerHTML = '<i class="ph ph-warning"></i> Email không hợp lệ.';
         emailEl.focus();
         return;
     }
     if (body.length < 10) {
-        errEl.textContent = '⚠ Nội dung cần ít nhất 10 ký tự.';
+        errEl.innerHTML = '<i class="ph ph-warning"></i> Nội dung cần ít nhất 10 ký tự.';
         bodyEl.focus();
         return;
     }
 
     btn.disabled = true;
-    var oldTxt = btn.textContent;
-    btn.textContent = '⏳ Đang gửi...';
+    var oldHTML = btn.innerHTML;
+    btn.innerHTML = '<i class="ph ph-spinner-gap" style="animation: spin 1s linear infinite;"></i> Đang gửi...';
 
     var fd = new FormData();
     fd.append('csrf_token', CSRF);
@@ -697,19 +738,19 @@ function sendSupportReply() {
         .then(function (r) { return r.json(); })
         .then(function (d) {
             if (d.ok) {
-                supToast(d.msg || '✅ Đã gửi trả lời!', false);
+                supToast(d.msg || 'Đã gửi trả lời!', false);
                 closeSupportModal();
                 setTimeout(function () { location.reload(); }, 1500);
             } else {
-                errEl.textContent = d.msg || 'Có lỗi xảy ra.';
+                errEl.innerHTML = '<i class="ph ph-warning"></i> ' + supEscape(d.msg || 'Có lỗi xảy ra.');
                 btn.disabled = false;
-                btn.textContent = oldTxt;
+                btn.innerHTML = oldHTML;
             }
         })
         .catch(function () {
-            errEl.textContent = 'Không thể kết nối tới máy chủ.';
+            errEl.innerHTML = '<i class="ph ph-warning"></i> Không thể kết nối tới máy chủ.';
             btn.disabled = false;
-            btn.textContent = oldTxt;
+            btn.innerHTML = oldHTML;
         });
 }
 

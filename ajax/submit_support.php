@@ -1,6 +1,12 @@
 <?php
+// File: ajax/submit_support.php
 require_once __DIR__ . '/../includes/config.php';
-require_once __DIR__ . '/../includes/notification_helper.php';
+
+// SỬA LẠI ĐƯỜNG DẪN TRỎ VÀO THƯ MỤC ADMIN
+$notifHelper = __DIR__ . '/../admin/includes/notification_helper.php';
+if (file_exists($notifHelper)) {
+    require_once $notifHelper;
+}
 
 header('Content-Type: application/json; charset=utf-8');
 if (ob_get_level()) ob_end_clean();
@@ -78,7 +84,7 @@ try {
     ]);
     $requestId = (int)$pdo->lastInsertId();
 } catch (Exception $e) {
-    jsonExit(['ok' => false, 'msg' => 'Lỗi hệ thống: ' . $e->getMessage()]);
+    jsonExit(['ok' => false, 'msg' => 'Lỗi hệ thống khi lưu dữ liệu.']);
 }
 
 /* Đánh dấu rate limit */
@@ -86,57 +92,66 @@ $_SESSION[$rateKey][] = time();
 
 /* ---------- Notify admin ---------- */
 try {
-    $priority = in_array($subject, ['return', 'payment'], true) ? 'high' : 'normal';
-    $icon     = [
-        'order'    => '📦',
-        'return'   => '🔄',
-        'payment'  => '💳',
-        'product'  => '👕',
-        'shipping' => '🚚',
-        'account'  => '👤',
-        'other'    => '💬',
-    ][$subject] ?? '💬';
+    if (function_exists('addNotification')) {
+        $priority = in_array($subject, ['return', 'payment'], true) ? 'high' : 'normal';
+        
+        $iconMap = [
+            'order'    => 'ph-package',
+            'return'   => 'ph-arrows-clockwise',
+            'payment'  => 'ph-credit-card',
+            'product'  => 'ph-t-shirt',
+            'shipping' => 'ph-truck',
+            'account'  => 'ph-user',
+            'other'    => 'ph-chat-circle',
+        ];
+        $iconClass = $iconMap[$subject] ?? 'ph-chat-circle';
 
-    notifyAdmin('support_new', $icon . ' Yêu cầu hỗ trợ mới #' . $requestId, 
-        "Từ: {$name} <{$email}>\n"
-        . ($phone ? "SĐT: {$phone}\n" : '')
-        . "Chủ đề: {$subjectLabel}\n\n"
-        . mb_substr($message, 0, 200) . (mb_strlen($message) > 200 ? '...' : ''),
-        [
-            'link'     => 'support.php?id=' . $requestId,
-            'ref_id'   => $requestId,
-            'ref_type' => 'support',
-            'icon'     => $icon,
-            'priority' => $priority,
-        ]
-    );
-} catch (Exception $e) {
-    // ignore
+        addNotification(
+            'support_new', 
+            'Yêu cầu hỗ trợ mới #' . $requestId, 
+            "Từ: {$name} <{$email}>\n" . ($phone ? "SĐT: {$phone}\n" : '') . "Chủ đề: {$subjectLabel}\n\n" . mb_substr($message, 0, 200) . (mb_strlen($message) > 200 ? '...' : ''),
+            'support.php?id=' . $requestId, 
+            $priority,                      
+            $iconClass                      
+        );
+    }
+} catch (Throwable $e) {
+    error_log('Notify admin error: ' . $e->getMessage());
 }
 
 /* ---------- Mail xác nhận cho user ---------- */
 try {
-    require_once __DIR__ . '/../includes/mailer.php';
+    // Kiểm tra an toàn xem file mailer.php đang nằm ở đâu (gốc hay admin)
+    $mailerPath = __DIR__ . '/../includes/mailer.php';
+    if (!file_exists($mailerPath)) {
+        $mailerPath = __DIR__ . '/../admin/includes/mailer.php';
+    }
 
-    $body = '
-    <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;">
-        <h2 style="color:#a8461f;">✅ Đã nhận yêu cầu hỗ trợ của bạn</h2>
-        <p>Xin chào <b>' . htmlspecialchars($name) . '</b>,</p>
-        <p>THE ATELIER đã nhận được yêu cầu hỗ trợ của bạn với nội dung:</p>
-        <div style="background:#faf8f4;border-left:4px solid #a8461f;padding:14px 18px;border-radius:6px;margin:16px 0;">
-            <div style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#8a8377;margin-bottom:6px;font-weight:700;">' 
-                . htmlspecialchars($subjectLabel) . '</div>
-            <div style="color:#37423a;line-height:1.6;">' . nl2br(htmlspecialchars($message)) . '</div>
-        </div>
-        <p>Chúng tôi sẽ phản hồi qua email <b>' . htmlspecialchars($email) . '</b> trong vòng <b>24 giờ làm việc</b>.</p>
-        <p>Mã yêu cầu: <b style="font-family:monospace;color:#a8461f;">#SR' . $requestId . '</b></p>
-        <hr style="border:none;border-top:1px solid #eee;margin:20px 0;">
-        <p style="color:#8a8377;font-size:13px;">— THE ATELIER Customer Care</p>
-    </div>';
+    if (file_exists($mailerPath)) {
+        require_once $mailerPath;
 
-    sendMail($email, $name, 'Đã nhận yêu cầu hỗ trợ #SR' . $requestId . ' — THE ATELIER', $body);
-} catch (Exception $e) {
-    // ignore
+        $body = '
+        <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#1c1b19;">
+            <h2 style="color:#a8461f;font-family:Georgia,serif;font-weight:500;">Đã nhận yêu cầu hỗ trợ của bạn</h2>
+            <p>Xin chào <b>' . htmlspecialchars($name) . '</b>,</p>
+            <p>THE ATELIER đã nhận được yêu cầu hỗ trợ của bạn với nội dung:</p>
+            <div style="background:#faf8f4;border-left:4px solid #a8461f;padding:14px 18px;border-radius:6px;margin:16px 0;">
+                <div style="font-size:12px;text-transform:uppercase;letter-spacing:1px;color:#8a8377;margin-bottom:6px;font-weight:700;">' 
+                    . htmlspecialchars($subjectLabel) . '</div>
+                <div style="color:#37423a;line-height:1.6;">' . nl2br(htmlspecialchars($message)) . '</div>
+            </div>
+            <p>Chúng tôi sẽ phản hồi qua email <b>' . htmlspecialchars($email) . '</b> trong vòng <b>24 giờ làm việc</b>.</p>
+            <p>Mã yêu cầu: <b style="font-family:monospace;color:#a8461f;">#SR' . $requestId . '</b></p>
+            <hr style="border:none;border-top:1px solid #eee;margin:20px 0;">
+            <p style="color:#8a8377;font-size:13px;">— THE ATELIER Customer Care</p>
+        </div>';
+
+        if (function_exists('sendMail')) {
+            sendMail($email, $name, 'Đã nhận yêu cầu hỗ trợ #SR' . $requestId . ' — THE ATELIER', $body);
+        }
+    }
+} catch (Throwable $e) {
+    error_log('Send mail error: ' . $e->getMessage());
 }
 
 jsonExit([
