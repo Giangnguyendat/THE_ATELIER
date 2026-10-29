@@ -1,432 +1,703 @@
 <?php
 /**
- * THE ATELIER — Chatbot Helper v3 (Smart Edition)
- * ------------------------------------------------------------------
- * Yêu cầu: PHP >= 7.4, PDO (MySQL).  API công khai KHÔNG đổi:
- *     chatbotReply(PDO $pdo, string $message): array
- *     => ['message','products','source', + 'intent','suggestions']
- *
- * Nâng cấp chính so với v2:
- *  1. Hiểu tiếng Việt KHÔNG DẤU + teencode (ko, dc, sp, bn, ntn...)
- *  2. Bóc tách "thực thể": loại SP, giới tính, màu, khoảng giá, size, sắp xếp
- *  3. Tìm sản phẩm thông minh (kết hợp nhiều tiêu chí, tự nới lỏng khi không có)
- *  4. Knowledge Base (FAQ) dạng dữ liệu — thêm câu hỏi mới chỉ cần thêm 1 mục
- *  5. Nhớ ngữ cảnh: "cái này giá bao nhiêu", "còn size M không", "so sánh 1 và 2"
- *  6. Tư vấn: quà tặng, phối đồ, dáng người, dịp (hè/đông/tiệc/biển/hẹn hò...)
- *  7. Tra cứu đơn hàng (chỉ khi đã đăng nhập)
- *  8. Groq AI có RAG: được cấp dữ liệu SP/chính sách thật → ít bịa hơn
- *  9. Sửa lỗi: rule "size" nuốt câu hỏi tồn kho, "women" bị nhận là nam,
- *     "1m6" parse sai, thiếu session_start, XSS khi echo từ khóa...
- *
- * ⚠️ Các chỗ đánh dấu [CHỈNH] là giả định về DB/chính sách của shop —
- *    hãy đối chiếu với dữ liệu thật của bạn.
+ * Chatbot Helper — Hybrid rule-based + OpenAI fallback
+ * Bao gồm: rules, gender detection, product search, stock check,
+ *          promotions, product detail, context-aware, OpenAI integration
  */
 
-if (!defined('GROQ_API_KEY')) {
-    $__secrets = __DIR__ . '/secrets.php';
-    if (file_exists($__secrets)) require_once $__secrets;
-}
-
-/* ---------- Cấu hình shop (sửa 1 chỗ, áp dụng toàn bot) ---------- */
-defined('CHATBOT_HOTLINE')     || define('CHATBOT_HOTLINE', '1900 123 456');
-defined('CHATBOT_EMAIL')       || define('CHATBOT_EMAIL', 'hello@theatelier.vn');
-defined('CHATBOT_FREESHIP')    || define('CHATBOT_FREESHIP', 500000);
-defined('CHATBOT_SHIP_FEE')    || define('CHATBOT_SHIP_FEE', 30000);
-defined('CHATBOT_RETURN_DAYS') || define('CHATBOT_RETURN_DAYS', 30);
-defined('CHATBOT_BASE_URL')    || define('CHATBOT_BASE_URL', '/clothing_shop');
-defined('CHATBOT_AI_LIMIT_PER_HOUR') || define('CHATBOT_AI_LIMIT_PER_HOUR', 30);
-
-/* ============================================================
-   🧰 HELPERS CHUNG
-   ============================================================ */
-function chatbotSession(): void {
-    if (session_status() === PHP_SESSION_NONE) @session_start();
-}
-
 function chatbotGenderLabel(string $gender): string {
-    return ['male' => 'Nam', 'female' => 'Nữ', 'unisex' => 'Unisex'][$gender] ?? 'Unisex';
-}
-
-function chatbotVnd($n): string {
-    return number_format((float)$n, 0, ',', '.') . 'đ';
-}
-
-/** Làm sạch text của người dùng trước khi in ngược lại (chống XSS / phá markdown). */
-function chatbotSafeText(string $s, int $max = 40): string {
-    $s = strip_tags($s);
-    $s = str_replace(['*', '_', '`', '|', '<', '>'], '', $s);
-    $s = trim(preg_replace('/\s+/u', ' ', $s));
-    return mb_strlen($s) > $max ? mb_substr($s, 0, $max) . '…' : $s;
-}
-
-/** Chuẩn hóa: thường hóa, bỏ dấu, xử lý teencode, bỏ ký tự lạ. */
-function chatbotNormalize(string $text): string {
-    static $map = null;
-    if ($map === null) {
-        $groups = [
-            'a' => 'àáạảãâầấậẩẫăằắặẳẵ', 'e' => 'èéẹẻẽêềếệểễ', 'i' => 'ìíịỉĩ',
-            'o' => 'òóọỏõôồốộổỗơờớợởỡ', 'u' => 'ùúụủũưừứựửữ', 'y' => 'ỳýỵỷỹ', 'd' => 'đ',
-        ];
-        $map = [];
-        foreach ($groups as $base => $chars) {
-            foreach (preg_split('//u', $chars, -1, PREG_SPLIT_NO_EMPTY) as $ch) $map[$ch] = $base;
-        }
-    }
-    if (class_exists('Normalizer')) {
-        $nf = Normalizer::normalize($text, Normalizer::FORM_C);
-        if ($nf !== false) $text = $nf;
-    }
-    $t = mb_strtolower(trim($text), 'UTF-8');
-    $t = strtr($t, $map);
-    $t = preg_replace('/[^a-z0-9%#\/\.,\s\-]/u', ' ', $t);
-    $slang = [
-        '/\b(ko|k0|hok|khum|hem)\b/' => 'khong',
-        '/\b(dc|dk)\b/'              => 'duoc',
-        '/\bsp\b/'                   => 'san pham',
-        '/\bj\b/'                    => 'gi',
-        '/\bntn\b/'                  => 'nhu the nao',
-        '/\bbn\b/'                   => 'bao nhieu',
-        '/\bvs\b/'                   => 'voi',
-        '/\b(sdt|dt)\b/'             => 'so dien thoai',
-        '/\b(tks|thks|thanks|thank you|thank)\b/' => 'cam on',
-        '/\b(okie|okla|okela|oki)\b/' => 'ok',
-        '/\b(shop oi|ad oi|admin oi)\b/' => 'shop',
-        '/\bmk\b/'                   => 'minh',
-    ];
-    $t = preg_replace(array_keys($slang), array_values($slang), $t);
-    return trim(preg_replace('/\s+/', ' ', $t));
-}
-
-function chatbotWordCount(string $n): int {
-    return $n === '' ? 0 : count(explode(' ', $n));
-}
-
-function chatbotSizeOrder(): array { return ['S', 'M', 'L', 'XL', '2XL']; }
-
-function chatbotShiftSize(string $size, int $delta): string {
-    $o = chatbotSizeOrder();
-    $i = array_search($size, $o, true);
-    if ($i === false) return $size;
-    return $o[max(0, min(count($o) - 1, $i + $delta))];
+    return [
+        'male'   => 'Nam',
+        'female' => 'Nữ',
+        'unisex' => 'Unisex',
+    ][$gender] ?? 'Unisex';
 }
 
 function chatbotDetectGenderFromName(string $name, string $dbGender = 'unisex'): string {
     if (in_array($dbGender, ['male', 'female'], true)) return $dbGender;
-    $n = mb_strtolower($name);
-    if (preg_match('/(?<![\p{L}])(nữ|women|woman|girl|lady)(?![\p{L}])|váy|đầm/u', $n)) return 'female';
-    if (preg_match('/(?<![\p{L}])(nam|men|man|boy)(?![\p{L}])/u', $n)) return 'male';
+
+    $name = mb_strtolower($name);
+    foreach (['nữ', 'nu ', ' nu', 'váy', 'đầm', 'chân váy'] as $kw) {
+        if (mb_strpos($name, $kw) !== false) return 'female';
+    }
+    foreach (['nam', 'men', 'boy'] as $kw) {
+        if (mb_strpos($name, $kw) !== false) return 'male';
+    }
     return 'unisex';
 }
 
-/** Chuyển sản phẩm sang "thẻ" cho JS */
-function chatbotMapProductsToCards(array $products): array {
-    $cards = [];
-    foreach ($products as $p) {
-        $price     = (float)($p['price'] ?? $p['base_price'] ?? 0);
-        $discount  = (int)($p['discount_percent'] ?? 0);
-        $salePrice = isset($p['sale_price']) ? (float)$p['sale_price'] : null;
-        $final     = $salePrice ?: ($discount > 0 ? round($price * (100 - $discount) / 100) : $price);
-        $img       = $p['image_url'] ?? $p['thumbnail'] ?? '';
-        $cards[] = [
-            'id'               => (int)($p['id'] ?? 0),
-            'name'             => (string)($p['name'] ?? ''),
-            'slug'             => (string)($p['slug'] ?? ''),
-            'url'              => CHATBOT_BASE_URL . '/product-details.php?id=' . (int)($p['id'] ?? 0),
-            'price'            => (int)$final,
-            'old_price'        => ($salePrice || $discount > 0) ? (int)$price : null,
-            'discount_percent' => $discount,
-            'in_stock'         => isset($p['total_stock']) ? ((int)$p['total_stock'] > 0) : null,
-            'image_url'        => $img !== '' ? CHATBOT_BASE_URL . '/uploads/' . $img : '',
-        ];
-    }
-    return $cards;
-}
-
-function chatbotFinalPrice(array $p): float {
-    $price = (float)($p['price'] ?? 0);
-    if (isset($p['sale_price']) && (float)$p['sale_price'] > 0) return (float)$p['sale_price'];
-    $d = (int)($p['discount_percent'] ?? 0);
-    return $d > 0 ? round($price * (100 - $d) / 100) : $price;
-}
-
 /* ============================================================
-   📏 SỐ ĐO → SIZE
+   PARSE SỐ ĐO + TÍNH SIZE
    ============================================================ */
-
-/** Trích chiều cao/cân nặng. $strict=true: chỉ nhận dạng có đơn vị/nhãn rõ ràng. */
-function chatbotExtractHW(string $text, bool $strict = false): array {
-    $t = mb_strtolower(trim($text));
-    // 1m65 | 1m 65 | 1m6 (=160) | 1,65m | 1.65m
-    $t = preg_replace_callback('/(?<![\d.,])1\s*m\s*(\d{1,2})(?!\d)/u', function ($m) {
-        return (string)(strlen($m[1]) === 1 ? 100 + (int)$m[1] * 10 : 100 + (int)$m[1]);
-    }, $t);
-    $t = preg_replace_callback('/(?<![\d.,])1[.,](\d{2})\s*m\b/u', fn($m) => (string)(100 + (int)$m[1]), $t);
-
-    $h = null; $w = null;
-    if (preg_match('/(\d{3})\s*cm\b/u', $t, $m)) $h = (float)$m[1];
-    if (preg_match('/(\d{2,3}(?:[.,]\d)?)\s*(?:kg|ky|kí|ki)\b/u', $t, $m)) $w = (float)str_replace(',', '.', $m[1]);
-    if ($h === null && preg_match('/(?:cao|chiều cao|chieu cao)\s*(\d{3})\b/u', $t, $m)) $h = (float)$m[1];
-    if ($w === null && preg_match('/(?:nặng|nang|cân nặng|can nang|cân|can)\s*(\d{2,3})\b/u', $t, $m)) $w = (float)$m[1];
-    if ($h !== null && ($h < 130 || $h > 220)) $h = null;
-    if ($w !== null && ($w < 30  || $w > 140)) $w = null;
-
-    if (!$strict && ($h === null || $w === null) && preg_match_all('/\d+(?:\.\d+)?/u', $t, $mm)) {
-        foreach (array_map('floatval', $mm[0]) as $n) {
-            if ($h === null && $n >= 130 && $n <= 220) { $h = $n; continue; }
-            if ($w === null && $n >= 30 && $n <= 140)  { $w = $n; }
-        }
-    }
-    return ['h' => $h, 'w' => $w];
-}
-
 function chatbotParseMeasurements(string $text): ?array {
-    $hw = chatbotExtractHW($text);
-    if (!$hw['h'] || !$hw['w']) return null;
-    return ['height' => $hw['h'], 'weight' => $hw['w']];
+    $t = mb_strtolower(trim($text));
+
+    // Chuẩn hóa "1m70" → "170"
+    $t = preg_replace_callback('/1m(\d{1,2})\b/u', function ($m) {
+        $cm = (int)$m[1];
+        return $cm < 10 ? (string)(100 + $cm) : (string)(100 + $cm);
+    }, $t);
+
+    $numbers = [];
+    if (preg_match_all('/\d+(?:\.\d+)?/u', $t, $m)) {
+        $numbers = array_map('floatval', $m[0]);
+    }
+    if (count($numbers) < 2) return null;
+
+    $height = null; $weight = null;
+    foreach ($numbers as $n) {
+        if ($height === null && $n >= 130 && $n <= 220)      $height = $n;
+        elseif ($weight === null && $n >= 30 && $n <= 140)   $weight = $n;
+    }
+    if (!$height || !$weight) return null;
+    return ['height' => $height, 'weight' => $weight];
 }
 
-function chatbotParseFitPreference(string $n): ?string {
-    if (preg_match('/\b(thich rong|mac rong|oversize|rong rai|thoai mai)\b/', $n)) return 'loose';
-    if (preg_match('/\b(thich om|om sat|slim|om body|mac om|vua sat)\b/', $n)) return 'tight';
-    return null;
-}
-
-function chatbotComputeSize(float $heightCm, float $weightKg, ?string $fit = null): array {
+function chatbotComputeSize(float $heightCm, float $weightKg): array {
     $bmi = $weightKg / (($heightCm / 100) ** 2);
+
     if ($weightKg < 50)      $size = 'S';
     elseif ($weightKg < 60)  $size = 'M';
     elseif ($weightKg < 70)  $size = 'L';
     elseif ($weightKg < 80)  $size = 'XL';
     else                     $size = '2XL';
 
-    if ($heightCm >= 175 && $size !== '2XL' && $bmi >= 18.5) $size = chatbotShiftSize($size, 1);
-    if ($heightCm < 155 && $size !== 'S' && $bmi < 25)       $size = chatbotShiftSize($size, -1);
-    if ($fit === 'loose') $size = chatbotShiftSize($size, 1);
-    if ($fit === 'tight') $size = chatbotShiftSize($size, -1);
+    if ($heightCm >= 175 && $size !== '2XL' && $bmi >= 18.5) {
+        $size = ['S'=>'M','M'=>'L','L'=>'XL','XL'=>'2XL'][$size] ?? $size;
+    }
+    if ($heightCm < 155 && $size !== 'S' && $bmi < 25) {
+        $size = ['M'=>'S','L'=>'M','XL'=>'L','2XL'=>'XL'][$size] ?? $size;
+    }
 
-    if ($bmi < 18.5)      $note = 'Dáng người thon gọn — nếu thích mặc ôm vừa có thể chọn size nhỏ hơn.';
-    elseif ($bmi < 24.9)  $note = 'Vóc dáng cân đối — size này sẽ vừa vặn.';
-    elseif ($bmi < 29.9)  $note = 'Nên chọn size này để mặc thoải mái, dễ vận động.';
-    else                  $note = 'Nên chọn size này hoặc nhắn shop tư vấn thêm để vừa vặn nhất.';
+    if ($bmi < 18.5)      $note = 'Bạn hơi gầy — có thể chọn size nhỏ hơn nếu thích ôm vừa.';
+    elseif ($bmi < 24.9)  $note = 'Vóc dáng cân đối — mặc size này sẽ vừa vặn.';
+    elseif ($bmi < 29.9)  $note = 'Bạn hơi đầy đặn — nên chọn size này để thoải mái.';
+    else                  $note = 'Nên chọn size này hoặc nhắn shop tư vấn thêm.';
 
-    return ['size' => $size, 'bmi' => round($bmi, 1), 'height' => $heightCm, 'weight' => $weightKg, 'note' => $note, 'fit' => $fit];
+    return ['size' => $size, 'bmi' => round($bmi, 1), 'height' => $heightCm, 'weight' => $weightKg, 'note' => $note];
 }
 
-function chatbotFormatSizeResponse(array $calc, bool $askProducts = true): string {
+function chatbotFormatSizeResponse(array $calc): string {
     $size = $calc['size'];
-    $tight = chatbotShiftSize($size, -1);
-    $loose = chatbotShiftSize($size, 1);
-    $alt = '';
-    if ($tight !== $size && $loose !== $size) $alt = "🔀 Thích **ôm sát** → **{$tight}** · Thích **thoải mái** → **{$loose}**\n\n";
-    elseif ($tight !== $size) $alt = "🔀 Thích ôm sát hơn → **{$tight}**\n\n";
-    elseif ($loose !== $size) $alt = "🔀 Thích rộng hơn → **{$loose}**\n\n";
+    $alt = ['S'=>[null,'M'],'M'=>['S','L'],'L'=>['M','XL'],'XL'=>['L','2XL'],'2XL'=>['XL',null]][$size] ?? [null,null];
 
-    $fitTxt = $calc['fit'] === 'loose' ? ' _(đã tính theo ý bạn: mặc rộng)_' : ($calc['fit'] === 'tight' ? ' _(đã tính theo ý bạn: mặc ôm)_' : '');
-    return "📏 **Kết quả tư vấn size:**\n\n"
-         . "📊 Cao **{$calc['height']}cm** · Nặng **{$calc['weight']}kg** · BMI **{$calc['bmi']}**\n\n"
-         . "✅ **Size phù hợp: {$size}**{$fitTxt}\n\n"
-         . "💡 {$calc['note']}\n\n"
-         . $alt
-         . ($askProducts ? "Bạn muốn mình gợi ý **sản phẩm size {$size}** không ạ?" : "Mình gợi ý vài mẫu **size {$size}** đang còn hàng 👇");
+    $altText = '';
+    if ($alt[0] && $alt[1]) {
+        $altText = "Nếu thích **ôm sát** → **{$alt[0]}** · Nếu thích **thoải mái** → **{$alt[1]}**\n\n";
+    } elseif ($alt[0]) {
+        $altText = "Nếu thích ôm sát hơn → **{$alt[0]}**\n\n";
+    } elseif ($alt[1]) {
+        $altText = "Nếu thích rộng hơn → **{$alt[1]}**\n\n";
+    }
+
+    return "**Kết quả tư vấn size:**\n\n"
+         . "Chiều cao: **{$calc['height']}cm** · Cân nặng: **{$calc['weight']}kg** · BMI: **{$calc['bmi']}**\n\n"
+         . "**Size phù hợp: {$size}**\n\n"
+         . "{$calc['note']}\n\n"
+         . $altText
+         . "Bạn muốn mình gợi ý **sản phẩm size {$size}** không ạ?";
 }
 
 /* ============================================================
-   🔍 PHÂN TÍCH THỰC THỂ (ENTITY EXTRACTION)
+   RULES
    ============================================================ */
-
-/** [regex không dấu, regex có dấu|null, từ khóa DB (chuỗi hoặc mảng)] */
-function chatbotTypeDictionary(): array {
+function chatbotGetRules(): array {
     return [
-        ['ao thun|ao phong|t ?shirt|tee', null, 'thun'],
-        ['so mi', null, 'sơ mi'],
-        ['ao khoac|ao gio|jacket|bomber|blazer', 'khoác', 'khoác'],
-        ['hoodie|ao ni', null, 'hoodie'],
-        ['ao len|cardigan|sweater', null, 'len'],
-        ['polo', null, 'polo'],
-        ['quan jean|jeans?|quan bo', null, 'jean'],
-        ['quan tay|quan au', null, 'tây'],
-        ['quan short|quan dui|shorts?', null, 'short'],
-        ['jogger|quan the thao|quan ni', null, 'jogger'],
-        ['kaki|khaki', null, 'kaki'],
-        ['chan vay', null, 'chân váy'],
-        ['vay (?:xoe|cong so|ngan|dai|lien|maxi|hoa)', 'váy', 'váy'],
-        ['dam (?:du|cong so|xoe|body|maxi|hoa|di tiec)|dress', 'đầm', 'đầm'],
-        ['giay|sneakers?', null, 'giày'],
-        ['doi dep|dep (?:nam|nu|sandal|quai)|sandal', 'dép', 'dép'],
-        ['tui (?:xach|deo|tote)|tote', 'túi', 'túi'],
-        ['balo|ba lo', null, 'balo'],
-        [null, 'mũ|nón', ['mũ', 'nón']],
-        ['that lung|day nit|belt', 'thắt lưng', 'thắt lưng'],
-        ['phu kien', null, 'phụ kiện'],
+        /* ===== SỐ ĐO ===== */
+        'measurements' => [
+            'patterns' => [
+                '/^\s*(1[3-9]\d|2[0-2]\d)\s+(3[0-9]|[4-9]\d|1[0-4]\d)\s*$/u',
+                '/^\s*(3[0-9]|[4-9]\d|1[0-4]\d)\s+(1[3-9]\d|2[0-2]\d)\s*$/u',
+                '/1m\d{1,3}\s*\d{2,3}\s*(kg)?/iu',
+                '/\d{2,3}\s*(kg)?\s*1m\d{1,3}/iu',
+                '/(cao|nặng)\s*1?m?\d/iu',
+            ],
+            'response' => '__COMPUTE_SIZE__',
+        ],
+
+        /* ===== CHÀO ===== */
+        'greeting' => [
+            'patterns' => [
+                '/(^|\s)(xin\s+)?chào(\s+(shop|bạn|ad|em|anh|chị))?(\s|$)/iu',
+                '/^(hi|hello|hey|hii+|helo)\b/iu',
+            ],
+            'response' => "Chào bạn! Mình là **Atelier Assistant**.\n\nMình giúp được bạn:\n- Tư vấn **size** — cho mình cân nặng + chiều cao\n- **Tìm sản phẩm** nam/nữ, theo mùa, dịp\n- **Kiểm tra tồn kho** — VD: \"áo thun nam còn M không\"\n- **Khuyến mãi** đang diễn ra\n- **Đổi trả**, **hủy đơn**, **địa chỉ**\n\nBạn cần gì ạ?",
+        ],
+
+        /* ===== HOÀN TRẢ ===== */
+        'return_product' => [
+            'patterns' => [
+                '/hoàn\s+(trả|hàng|lại|tiền)/iu',
+                '/trả\s+(hàng|lại|đồ|sản\s+phẩm)/iu',
+                '/đổi\s+(trả|hàng|đồ|sản\s+phẩm)/iu',
+                '/đổi\s+size|đổi\s+cỡ/iu',
+                '/chính\s+sách\s+(hoàn|đổi|trả)/iu',
+                '/bảo\s+hành/iu',
+            ],
+            'response' => "**Chính sách hoàn trả — THE ATELIER:**\n\n**Điều kiện đổi/trả:**\n- Trong **30 ngày** kể từ khi nhận hàng\n- Sản phẩm còn **nguyên tag**, chưa qua sử dụng\n- Còn **hoá đơn** hoặc mã đơn\n\n**Được đổi/trả khi:**\n- Lỗi từ shop → đổi mới / hoàn **100%**\n- Không vừa size → đổi size **miễn phí lần đầu**\n- Không đúng mô tả → hoàn **100%**\n\n**Không áp dụng:**\n- Sản phẩm sale trên **50%**\n- Đồ lót, phụ kiện cá nhân\n- SP đã qua sử dụng/giặt ủi\n\nBạn muốn đổi/trả SP nào ạ?",
+        ],
+
+        /* ===== HỦY ĐƠN ===== */
+        'cancel_order' => [
+            'patterns' => [
+                '/hủy\s+(đơn|order|đặt\s+hàng)/iu',
+                '/cancel\s+(đơn|order)/iu',
+                '/không\s+muốn\s+(mua|đặt)\s+nữa/iu',
+                '/muốn\s+hủy/iu',
+            ],
+            'response' => "**Hủy đơn hàng — THE ATELIER:**\n\n**Có thể hủy MIỄN PHÍ khi đơn ở:**\n- Chờ xử lý (pending)\n- Đang xử lý (processing)\n- Đã xác nhận (confirmed)\n\n**Không thể hủy khi đơn đã:**\n- Đang giao hàng\n- Đã giao thành công\n\n**Cách hủy:**\n1. Vào **Tài khoản** → **Đơn hàng của tôi**\n2. Chọn đơn → bấm **Hủy đơn hàng**\n3. Chọn lý do → xác nhận\n\nĐơn bank/card đã thanh toán sẽ được **hoàn tiền trong 12 giờ**.",
+        ],
+
+        /* ===== SIZE ===== */
+        'size' => [
+            'patterns' => [
+                '/\bsize\b/iu',
+                '/kích\s+(thước|cỡ)/iu',
+                '/số\s+đo/iu',
+                '/chọn\s+(size|số|kích)/iu',
+            ],
+            'response' => "**Hướng dẫn chọn size THE ATELIER:**\n\n| Cân nặng | Chiều cao | Size |\n|---|---|---|\n| 45-52kg | 1m50-1m58 | **S** |\n| 53-60kg | 1m55-1m65 | **M** |\n| 61-68kg | 1m60-1m72 | **L** |\n| 69-78kg | 1m65-1m78 | **XL** |\n| 79-90kg | 1m70-1m85 | **2XL** |\n\nNếu ở giữa 2 size → chọn **size lớn hơn** cho thoải mái.\n\nBạn cho mình **cân nặng + chiều cao** để tư vấn chính xác nhé!",
+        ],
+
+        /* ===== SHIP ===== */
+        'ship' => [
+            'patterns' => [
+                '/phí\s+(ship|vận\s+chuyển|giao)/iu',
+                '/ship\s+(bao\s+nhiêu|ntn)/iu',
+                '/vận\s+chuyển|giao\s+hàng/iu',
+                '/bao\s+lâu\s+(giao|nhận)/iu',
+                '/freeship|free\s+ship/iu',
+            ],
+            'response' => "**Chính sách vận chuyển:**\n\n- **Miễn phí ship** đơn từ **500.000đ**\n- Đơn dưới 500k: phí **30.000đ** toàn quốc\n- **Thời gian giao:**\n  • Nội thành TP.HCM/HN: **1-2 ngày**\n  • Tỉnh khác: **2-4 ngày**\n\nĐơn được đóng gói cẩn thận, giao tận nơi!",
+        ],
+
+        /* ===== THANH TOÁN ===== */
+        'payment' => [
+            'patterns' => [
+                '/thanh\s+toán/iu',
+                '/phương\s+thức\s+trả/iu',
+                '/\bcod\b/iu',
+                '/chuyển\s+khoản/iu',
+                '/thẻ\s+(tín\s+dụng|ghi\s+nợ)/iu',
+            ],
+            'response' => "**Phương thức thanh toán:**\n\n1. **COD** — Thanh toán khi nhận hàng (PIN 6 số)\n2. **Chuyển khoản** — QR / CK ngân hàng (PIN + OTP)\n3. **Thẻ tín dụng** — Visa, Mastercard, JCB (PIN + OTP)\n\n**Bảo mật 2 lớp:** Mọi giao dịch xác minh qua **PIN** + **OTP email**.",
+        ],
+
+        /* ===== KHUYẾN MÃI CHI TIẾT ===== */
+        'promotion_detail' => [
+            'patterns' => [
+                '/(đang|hiện|sắp)\s+(có|có\s+chương)/iu',
+                '/(chương\s+trình|khuyến\s+mãi|sale)\s+(gì|nào|đang|hiện|sắp)/iu',
+                '/có\s+(chương\s+trình|khuyến\s+mãi|sale|giảm\s+giá)/iu',
+                '/(sắp|tới)\s+(có|sẽ\s+có)\s+(khuyến\s+mãi|sale|giảm|ưu\s+đãi)/iu',
+                '/giới\s+thiệu.*(khuyến\s+mãi|sale|ưu\s+đãi)/iu',
+            ],
+            'response' => '__SHOW_PROMOTIONS__',
+        ],
+
+        /* ===== KHUYẾN MÃI NGẮN ===== */
+        'promotion' => [
+            'patterns' => [
+                '/giảm\s+giá|khuyến\s+mãi|voucher|mã\s+giảm|ưu\s+đãi/iu',
+            ],
+            'response' => "**Ưu đãi tại THE ATELIER:**\n\n- **8/3** → Giảm **30%** SP Nữ\n- **19/11** → Giảm **30%** SP Nam\n- **20/11** → Giảm **30%** SP Nữ\n- **Voucher sinh nhật** → Giảm **25%**\n\nHỏi mình \"**đang có chương trình gì**\" để xem chi tiết nhé!",
+        ],
+
+        /* ===== ĐỊA CHỈ ===== */
+        'address' => [
+            'patterns' => [
+                '/địa\s+chỉ/iu',
+                '/shop\s+(ở|tại)\s+đâu/iu',
+                '/cửa\s+hàng\s+(ở|tại)\s+đâu/iu',
+                '/showroom/iu',
+            ],
+            'response' => "**Địa chỉ cửa hàng THE ATELIER:**\n\n**Showroom chính:**\n123 Đường Thời Trang\nPhường Bến Nghé, Quận 1\nTP. Hồ Chí Minh\n\nGần ga Metro Bến Thành (đi bộ 5 phút)\nCó bãi giữ xe miễn phí\n\nGọi trước **1900 123 456** để được tư vấn nhé!",
+        ],
+
+        /* ===== GIỜ MỞ CỬA ===== */
+        'opening_hours' => [
+            'patterns' => [
+                '/giờ\s+(mở|đóng|đóng\s+mở)\s*cửa/iu',
+                '/mở\s+cửa\s+(lúc|khi|từ)/iu',
+                '/giờ\s+làm\s+việc/iu',
+                '/(mấy\s+giờ|bao\s+giờ)\s+(mở|đóng)/iu',
+                '/cuối\s+tuần.*(mở|có)/iu',
+            ],
+            'response' => "**Giờ mở cửa THE ATELIER:**\n\n| Ngày | Giờ |\n|---|---|\n| Thứ 2 - Thứ 6 | 9:00 - 21:30 |\n| Thứ 7 | 9:00 - 22:00 |\n| Chủ nhật | 9:30 - 21:00 |\n| Ngày lễ | 10:00 - 20:00 |\n\nMở cửa **tất cả các ngày** · Hotline online **24/7** · Website đặt hàng **không giới hạn giờ**!",
+        ],
+
+        /* ===== LIÊN HỆ ===== */
+        'contact' => [
+            'patterns' => [
+                '/hotline|số\s+điện\s+thoại/iu',
+                '/liên\s+hệ/iu',
+                '/\bemail\b/iu',
+            ],
+            'response' => "**Liên hệ THE ATELIER:**\n\n- **Hotline:** 1900 123 456 (8h - 22h)\n- **Email:** hello@theatelier.vn\n- **Địa chỉ:** 123 Đường Thời Trang, Q.1, TP.HCM\n\nBạn có thể chat trực tiếp với mình 24/7 nhé!",
+        ],
+
+        /* ===== CẢM ƠN ===== */
+        'thanks' => [
+            'patterns' => [
+                '/cảm\s+ơn|thank|thanks|tks/iu',
+                '/ok(e)?\s+(shop|bạn|ad)/iu',
+            ],
+            'response' => "Dạ không có gì ạ! Cần gì thêm bạn cứ nhắn mình nhé. Chúc bạn mua sắm vui vẻ tại THE ATELIER!",
+        ],
+
+        /* ===== TẠM BIỆT ===== */
+        'goodbye' => [
+            'patterns' => ['/tạm\s+biệt|\bbye\b|goodbye/iu'],
+            'response' => "Tạm biệt bạn! Hẹn gặp lại tại **THE ATELIER** nhé!",
+        ],
+
+        /* ===== TƯ VẤN GIÁ / COMBO ===== */
+        'price_advice' => [
+            'patterns' => [
+                '/(mua|tư\s+vấn).*(tiết\s+kiệm|rẻ|tối\s+ưu|hợp\s+lý)/iu',
+                '/(combo|set)\s+(nào|gì).*(tốt|hợp|rẻ|tiết\s+kiệm)/iu',
+                '/tư\s+vấn\s+(mua|chọn).*(combo|set|nhiều)/iu',
+                '/nên\s+mua\s+(gì|combo|set)/iu',
+                '/mua\s+combo\s+(lợi|có\s+lợi|tốt)\s+(gì|hơn)/iu',
+            ],
+            'response' => "**Tư vấn mua hàng tiết kiệm:**\n\n**Combo tiết kiệm 15-25%** so với mua lẻ:\n- Combo Áo thun + Quần jean nam — chỉ **499.000đ**\n- Combo Áo khoác + Quần dài nữ — chỉ **699.000đ**\n\n**Mẹo mua thông minh:**\n1. **Chọn combo** thay vì mua lẻ → tiết kiệm 15-25%\n2. **Đơn từ 500.000đ** → **miễn phí ship**\n3. **Voucher sinh nhật** → giảm thêm **25%**\n4. **Mua dịp sale** — 8/3, 19/11, 20/11 giảm **30%**\n\nHỏi mình \"**xem combo**\" để xem các combo đang hot nhé!",
+        ],
+
+        /* ===== TRẺ EM ===== */
+        'kids' => [
+            'patterns' => [
+                '/(đồ|quần\s+áo|thời\s+trang)\s+(trẻ\s+em|em\s+bé|cho\s+bé|con\s+nít)/iu',
+                '/trẻ\s+em|em\s+bé|con\s+nít|thiếu\s+nhi/iu',
+            ],
+            'response' => "**Đồ trẻ em:**\n\nRất tiếc, hiện tại **THE ATELIER chưa có dòng sản phẩm dành riêng cho trẻ em** ạ\n\n**Gợi ý:**\n- Tham khảo **size nhỏ nhất (S)** cho các bé lớn (12-14 tuổi)\n- Xem bộ sưu tập **Unisex** phù hợp cả gia đình\n\n**Đăng ký nhận tin** ở footer để được thông báo khi shop mở rộng dòng trẻ em nhé!",
+        ],
+
+        /* ===== MÙA HÈ ===== */
+        'summer' => [
+            'patterns' => [
+                '/(đồ|quần\s+áo|thời\s+trang)\s+(mùa\s+hè|hè)/iu',
+                '/mùa\s+hè|đồ\s+hè/iu',
+                '/(mát|thoáng|mỏng|nhẹ).*(mùa\s+hè|hè|nóng)/iu',
+                '/(mặc|mua)\s+(gì|đồ).*(hè|nóng)/iu',
+            ],
+            'response' => '__SHOW_SUMMER_PRODUCTS__',
+        ],
+
+        /* ===== MÙA ĐÔNG ===== */
+        'winter' => [
+            'patterns' => [
+                '/(đồ|quần\s+áo|thời\s+trang)\s+(mùa\s+đông|đông)/iu',
+                '/mùa\s+đông|đồ\s+đông/iu',
+                '/(ấm|dày|len|khoác).*(mùa\s+đông|đông|lạnh)/iu',
+                '/(mặc|mua)\s+(gì|đồ).*(đông|lạnh)/iu',
+            ],
+            'response' => '__SHOW_WINTER_PRODUCTS__',
+        ],
+
+        /* ===== THỂ THAO ===== */
+        'sport' => [
+            'patterns' => [
+                '/(đồ|quần\s+áo)\s+(thể\s+thao|gym|chạy\s+bộ|tập\s+luyện)/iu',
+                '/thể\s+thao|\bgym\b|yoga|chạy\s+bộ/iu',
+                '/(mặc|mua)\s+(gì|đồ).*(tập|gym|chạy)/iu',
+            ],
+            'response' => '__SHOW_SPORT_PRODUCTS__',
+        ],
+
+        /* ===== ĐI CHƠI ===== */
+        'casual' => [
+            'patterns' => [
+                '/(đồ|quần\s+áo).*(đi\s+chơi|dạo\s+phố|đi\s+cà\s+phê)/iu',
+                '/(mặc|mua)\s+(gì|đồ).*(đi\s+chơi|dạo|chơi)/iu',
+                '/đồ\s+(đi\s+chơi|dạo\s+phố|casual)/iu',
+                '/style\s+(casual|năng\s+động)/iu',
+            ],
+            'response' => '__SHOW_CASUAL_PRODUCTS__',
+        ],
+
+        /* ===== ĐI LÀM ===== */
+        'office' => [
+            'patterns' => [
+                '/(đồ|quần\s+áo).*(đi\s+làm|công\s+sở|văn\s+phòng)/iu',
+                '/(mặc|mua)\s+(gì|đồ).*(đi\s+làm|công\s+sở|văn\s+phòng)/iu',
+                '/đồ\s+(đi\s+làm|văn\s+phòng|office)/iu',
+                '/(sang\s+trọng|lịch\s+sự|thanh\s+lịch)/iu',
+            ],
+            'response' => '__SHOW_OFFICE_PRODUCTS__',
+        ],
+
+        /* ===== ĐỒ NAM ===== */
+        'product_male' => [
+            'patterns' => [
+                '/(đồ|quần\s+áo|thời\s+trang|sản\s+phẩm)\s+(nam|men)/iu',
+                '/^(nam|men)\s+(có\s+gì|thế\s+nào)/iu',
+            ],
+            'response' => '__SHOW_MALE_PRODUCTS__',
+        ],
+
+        /* ===== ĐỒ NỮ ===== */
+        'product_female' => [
+            'patterns' => [
+                '/(đồ|quần\s+áo|thời\s+trang|sản\s+phẩm)\s+(nữ|nu|women)/iu',
+                '/^(nữ|women)\s+(có\s+gì|thế\s+nào)/iu',
+            ],
+            'response' => '__SHOW_FEMALE_PRODUCTS__',
+        ],
+                /* ============================================================
+           BỔ SUNG 20 NHÓM CÂU HỎI THƯỜNG GẶP
+           ============================================================ */
+
+        /* ===== 1. KIỂM TRA ĐƠN HÀNG ===== */
+        'order_tracking' => [
+            'patterns' => [
+                '/(kiểm\s+tra|check|tra\s+cứu|xem)\s+(đơn|order)/iu',
+                '/(đơn|order)\s+(của\s+tôi|mình)\s+(đâu|đến\s+đâu|sao\s+rồi|thế\s+nào)/iu',
+                '/(đơn|order)\s+(hàng)?\s*(đang|đã|sẽ)\s+(giao|ship|đi)/iu',
+                '/bao\s+giờ\s+(đơn|hàng|order).*(đến|giao|nhận)/iu',
+                '/(tracking|vận\s+đơn|mã\s+vận\s+đơn)/iu',
+            ],
+            'response' => "**Kiểm tra đơn hàng — THE ATELIER:**\n\n**Cách 1 — Tự tra cứu:**\n1. Đăng nhập tài khoản\n2. Vào **Đơn hàng của tôi**\n3. Xem **trạng thái + mã vận đơn**\n\n**Cách 2 — Nhắn mình:**\nCho mình **mã đơn** (VD: `#AT12345`) hoặc **SĐT đặt hàng**, mình sẽ kiểm tra giúp bạn.\n\n**Thời gian giao:**\n- Nội thành HCM/HN: **1-2 ngày**\n- Tỉnh khác: **2-4 ngày**\n\nĐơn quá 4 ngày chưa nhận → gọi hotline **1900 123 456** ạ!",
+        ],
+
+        /* ===== 2. ĐỔI ĐỊA CHỈ / SĐT ĐƠN HÀNG ===== */
+        'order_modify' => [
+            'patterns' => [
+                '/(đổi|thay|sửa|chỉnh)\s+(địa\s+chỉ|sđt|số\s+điện\s+thoại|số\s+nhà)/iu',
+                '/(địa\s+chỉ|sđt|số\s+điện\s+thoại)\s+(sai|nhầm|không\s+đúng|bị\s+sai)/iu',
+                '/muốn\s+(đổi|thay)\s+(địa\s+chỉ|sđt)/iu',
+            ],
+            'response' => "**Đổi địa chỉ / SĐT giao hàng:**\n\n**Còn kịp đổi khi đơn đang:**\n- Chờ xử lý (pending)\n- Đang xử lý (processing)\n\n**Cách đổi:**\n1. Vào **Tài khoản** → **Đơn hàng của tôi**\n2. Chọn đơn → bấm **Yêu cầu thay đổi**\n3. Nhập địa chỉ/SĐT mới → xác nhận\n\n**Đơn đã giao cho đơn vị vận chuyển:**\nGọi ngay hotline **1900 123 456** để shop liên hệ shipper hỗ trợ đổi.\n\nLưu ý: Đơn COD có thể không đổi được sau khi đã ship.",
+        ],
+
+        /* ===== 3. CÁCH DÙNG VOUCHER ===== */
+        'voucher_usage' => [
+            'patterns' => [
+                '/nhập\s+(mã|voucher|code)\s+(ở\s+đâu|như\s+thế\s+nào|ntn)/iu',
+                '/(mã|voucher|code)\s+(không|ko|k)\s+(dùng|áp|sử\s+dụng)\s+(được|dc)/iu',
+                '/cách\s+(dùng|áp|nhập)\s+(mã|voucher|code)/iu',
+                '/(voucher|mã\s+giảm)\s+(bị|không)\s+(lỗi|hết\s+hạn)/iu',
+            ],
+            'response' => "**Hướng dẫn dùng mã giảm giá:**\n\n**Cách nhập:**\n1. Thêm sản phẩm vào **Giỏ hàng**\n2. Vào **Thanh toán**\n3. Tìm ô **\"Mã giảm giá\"** bên phải\n4. Nhập mã → bấm **Áp dụng**\n\n**Mã không dùng được?** Kiểm tra:\n- Mã còn **hạn** không?\n- Đơn đã đạt **giá trị tối thiểu**?\n- Sản phẩm có nằm trong **loại áp dụng**?\n- Bạn đã dùng mã này **rồi** chưa?\n\nHỏi mình \"**đang có mã gì**\" để xem các mã còn hiệu lực nhé!",
+        ],
+
+        /* ===== 4. BẢO QUẢN / CHẤT LIỆU ===== */
+        'product_care' => [
+            'patterns' => [
+                '/cách\s+(giặt|bảo\s+quản|giữ|ủi|là)/iu',
+                '/(giặt|ủi|bảo\s+quản)\s+(như\s+thế\s+nào|ntn|sao|ra\s+sao)/iu',
+                '/(có|bị)\s+(phai\s+màu|co\s+rút|nhão|giãn)/iu',
+                '/chất\s+liệu\s+(vải|áo|sản\s+phẩm)/iu',
+                '/(vải|chất\s+liệu).*(gì|nào|thoáng|co\s+giãn)/iu',
+            ],
+            'response' => "**Bảo quản sản phẩm THE ATELIER:**\n\n**Chất liệu thường dùng:**\n- Cotton 100% — thoáng mát, thấm hút tốt\n- Cotton pha Spandex — co giãn nhẹ, giữ form\n- Kaki / Jean — bền, ít nhăn\n- Lụa / Voan — mềm, mát (dòng nữ)\n\n**Cách giặt đúng:**\n- Giặt máy **nước lạnh** (≤30°C)\n- Lộn trái, túi giặt cho đồ có in/thêu\n- **Không dùng** chất tẩy mạnh\n- Phơi **trong bóng râm**, tránh nắng gắt\n- Ủi ở nhiệt độ **trung bình**\n\n**Màu đậm** (đen, navy) nên giặt riêng lần đầu để tránh lem màu nhé!",
+        ],
+
+        /* ===== 5. HÀNG HẾT KHI NÀO CÓ LẠI ===== */
+        'restock_notification' => [
+            'patterns' => [
+                '/(khi\s+nào|bao\s+giờ)\s+(có|có\s+lại|nhập|restock)/iu',
+                '/(hết\s+hàng|out\s+of\s+stock).*(khi\s+nào|bao\s+giờ|có\s+lại)/iu',
+                '/(thông\s+báo|báo|nhắc)\s+(tôi|mình)?\s*(khi|nếu)\s+(có\s+hàng|lại\s+hàng)/iu',
+                '/(đăng\s+ký|nhận\s+tin)\s+(khi\s+có\s+hàng|restock)/iu',
+            ],
+            'response' => "**Thông báo khi có hàng lại:**\n\n**Cách 1 — Để lại SĐT:**\nNhắn mình **mã sản phẩm** hoặc **tên SP + size** + **SĐT** → shop sẽ gọi khi có hàng.\n\n**Cách 2 — Theo dõi tự động:**\n1. Vào trang sản phẩm đang hết hàng\n2. Bấm nút **\"Thông báo khi có hàng\"**\n3. Nhập email/SĐT → nhận thông báo tự động\n\n**Thời gian nhập hàng:**\n- Sản phẩm **bán chạy** → 3-7 ngày\n- Sản phẩm **theo mùa** → 7-14 ngày\n- **Limited Edition** → có thể không nhập lại\n\nBạn muốn thông báo cho sản phẩm nào ạ?",
+        ],
+
+        /* ===== 6. MUA SỈ / ĐẠI LÝ ===== */
+        'wholesale' => [
+            'patterns' => [
+                '/(mua|đặt|lấy)\s+(sỉ|buôn|nhiều|số\s+lượng\s+lớn)/iu',
+                '/(đại\s+lý|nhà\s+phân\s+phối|ctv|bán\s+hàng)\s+(đăng\s+ký|hợp\s+tác)/iu',
+                '/chiết\s+khấu\s+(sỉ|buôn|số\s+lượng)/iu',
+                '/(bán\s+buôn|wholesale)\s+(giá|bao\s+nhiêu)/iu',
+            ],
+            'response' => "**Chính sách mua sỉ / Đại lý THE ATELIER:**\n\n**Điều kiện:**\n- Đơn tối thiểu **20 sản phẩm** (cùng loại)\n- Hoặc tổng đơn từ **10.000.000đ**\n\n**Chiết khấu:**\n- 20-49 SP: **15%**\n- 50-99 SP: **20%**\n- 100+ SP: **25-30%** (thương lượng)\n\n**Hỗ trợ:**\n- Giao hàng toàn quốc\n- Được đổi mẫu trong 7 ngày\n- Có hợp đồng + hóa đơn VAT\n\n**Liên hệ:**\nEmail **wholesale@theatelier.vn**\nHotline **1900 123 456** (nhánh 2)\n\nBạn để lại SĐT + nhu cầu, mình chuyển bộ phận sỉ liên hệ ngay nhé!",
+        ],
+
+        /* ===== 7. THẺ THÀNH VIÊN / TÍCH ĐIỂM ===== */
+        'loyalty_program' => [
+            'patterns' => [
+                '/(thẻ|hội\s+viên|thành\s+viên)\s+(khách\s+hàng)?.*(đăng\s+ký|làm|thế\s+nào|lợi\s+ích)/iu',
+                '/tích\s+(điểm|lũy)\s+(như\s+thế\s+nào|ntn|sao|lợi\s+ích)/iu',
+                '/(điểm|loyalty|khách\s+vip)\s+(thưởng|đổi|quy\s+đổi)/iu',
+                '/chương\s+trình\s+(thành\s+viên|khách\s+hàng\s+thân\s+thiết)/iu',
+            ],
+            'response' => "**Thẻ thành viên THE ATELIER:**\n\n**Hạng thẻ & quyền lợi:**\n| Hạng | Điều kiện | Quyền lợi |\n|---|---|---|\n| **Silver** | Đơn đầu tiên | Tích 1% |\n| **Gold** | Tổng 5.000.000đ | Tích 2% + Freeship |\n| **Platinum** | Tổng 20.000.000đ | Tích 3% + ưu tiên sale |\n\n**Cách đăng ký:**\n1. Tạo tài khoản trên website (miễn phí)\n2. Mỗi đơn hoàn tất → tự tích điểm\n3. Điểm = VNĐ, dùng giảm giá đơn sau\n\n**Quà tặng:**\n- Sinh nhật: voucher **25%**\n- Giới thiệu bạn bè: cả 2 nhận **50.000đ**\n\nBạn muốn xem điểm hiện có? Vào **Tài khoản** → **Điểm thưởng** nhé!",
+        ],
+
+        /* ===== 8. GÓI QUÀ ===== */
+        'gift_wrap' => [
+            'patterns' => [
+                '/(gói|đóng|bọc)\s+(quà|hộp|gift)/iu',
+                '/(thiệp|card|note)\s+(chúc|gửi|tặng|kèm)/iu',
+                '/quà\s+tặng\s+(sinh\s+nhật|kỷ\s+niệm|valentine|8/3|20/10)/iu',
+                '/có\s+(gói|đóng)\s+quà\s+(không|ko|k)/iu',
+            ],
+            'response' => "**Dịch vụ gói quà THE ATELIER:**\n\n**Miễn phí:**\n- Túi giấy + ribbon thương hiệu\n- Thiệp chúc viết tay (nếu yêu cầu)\n\n**Có phí — Gói Premium (30.000đ):**\n- Hộp cứng cao cấp\n- Ruy băng lụa + hoa khô\n- Thiệp in theo yêu cầu\n\n**Cách yêu cầu:**\nKhi đặt hàng, ghi chú vào ô **\"Ghi chú đơn hàng\"** VD:\n> _\"Gói quà sinh nhật, thiệp: Chúc mừng sinh nhật em yêu!\"_\n\nShop sẽ chuẩn bị và chụp ảnh gửi bạn trước khi ship nhé!",
+        ],
+
+        /* ===== 9. PHÍ ĐỔI TRẢ ===== */
+        'exchange_fee' => [
+            'patterns' => [
+                '/phí\s+(đổi|trả|hoàn)/iu',
+                '/(đổi|trả)\s+(có\s+mất\s+phí|tốn\s+phí|mất\s+tiền|free)/iu',
+                '/(đổi\s+size|đổi\s+mẫu)\s+(có\s+mất\s+phí|tốn\s+tiền|free)/iu',
+                '/(miễn\s+phí|free)\s+(đổi|trả)/iu',
+            ],
+            'response' => "**Phí đổi/trả hàng:**\n\n**Miễn phí — Khi lỗi từ shop:**\n- Giao sai mẫu/size/màu\n- Sản phẩm lỗi, rách, hỏng\n- Thiếu phụ kiện\n→ Shop chịu **100%** phí 2 chiều\n\n**Có phí — Khi đổi ý:**\n- Đổi size/mẫu **lần đầu**: **Miễn phí** (khách chịu phí ship 1 chiều ~30.000đ)\n- Đổi **lần 2 trở đi**: 30.000đ/lần\n- Trả hàng không mua lại: phí **30.000đ**\n\n**Lưu ý:**\n- Đổi trong **30 ngày**\n- SP còn nguyên tag, chưa qua sử dụng\n\nBạn muốn đổi sản phẩm nào ạ?",
+        ],
+
+        /* ===== 10. ĐỒNG KIỂM KHI NHẬN ===== */
+        'inspect_before_pay' => [
+            'patterns' => [
+                '/(đồng\s+kiểm|kiểm\s+tra\s+hàng|coi\s+hàng|xem\s+hàng)\s+(trước|khi|rồi)/iu',
+                '/(có\s+được|cho)\s+(xem|kiểm|coi|thử)\s+(hàng|đồ)\s+(trước|khi)/iu',
+                '/đồng\s+kiểm\s+(khi\s+nhận|cod)/iu',
+                '/(nhận\s+hàng|giao\s+hàng)\s+(có\s+được|cho)\s+(xem|kiểm|thử)/iu',
+            ],
+            'response' => "**Đồng kiểm khi nhận hàng (COD):**\n\n**Được phép:**\n- Mở hộp kiểm tra **số lượng, mẫu mã, size, màu**\n- **Không thử** (mặc) sản phẩm\n- Quay video mở hộp để đối chiếu\n\n**Quy trình:**\n1. Nhận hàng từ shipper\n2. **Quay video** mở hộp\n3. Kiểm tra sản phẩm trong **2-3 phút**\n4. Đúng → thanh toán\n5. Sai/lỗi → **từ chối nhận**, shipper hoàn về shop\n\n**Lưu ý:**\n- Đơn **chuyển khoản trước** không áp dụng đồng kiểm\n- Shipper có quyền **không cho đồng kiểm** với đơn giá trị cao (tùy đơn vị)\n\nBạn yên tâm đặt hàng nhé!",
+        ],
+
+        /* ===== 11. HÓA ĐƠN VAT ===== */
+        'invoice_vat' => [
+            'patterns' => [
+                '/(hóa\s+đơn|hoá\s+đơn|invoice)\s+(vat|đỏ|điện\s+tử|công\s+ty)/iu',
+                '/(xuất|viết|lấy)\s+(hóa\s+đơn|hoá\s+đơn|vat)/iu',
+                '/công\s+ty\s+(có\s+được|xuất)\s+(hóa\s+đơn|vat)/iu',
+            ],
+            'response' => "**Xuất hóa đơn VAT:**\n\n**Hỗ trợ khi:**\n- Đơn từ **2.000.000đ**\n- Khách hàng là **công ty** hoặc **cá nhân kinh doanh**\n\n**Cách yêu cầu:**\n1. Khi thanh toán → tick **\"Xuất hóa đơn VAT\"**\n2. Điền: **Tên công ty, MST, địa chỉ, email**\n3. Hóa đơn điện tử gửi về email trong **24h** sau khi đơn hoàn tất\n\n**Ngoài ra:**\n- Hóa đơn **bán lẻ** (không VAT): có sẵn mọi đơn, in từ **Tài khoản → Đơn hàng**\n\nCần hỗ trợ? Gọi **1900 123 456** (nhánh 3) — bộ phận kế toán nhé!",
+        ],
+
+        /* ===== 12. CHÍNH HÃNG / AUTH ===== */
+        'authenticity' => [
+            'patterns' => [
+                '/(hàng|sản\s+phẩm)\s+(chính\s+hãng|auth|authentic|thật|real)/iu',
+                '/(có\s+phải|đây\s+là)\s+(hàng\s+thật|hàng\s+auth|fake|nhái)/iu',
+                '/(hàng|sản\s+phẩm)\s+(fake|nhái|giả|copy)/iu',
+                '/(cam\s+kết|đảm\s+bảo)\s+(chính\s+hãng|chất\s+lượng)/iu',
+            ],
+            'response' => "**Cam kết chất lượng THE ATELIER:**\n\n**100% chính hãng — Made by THE ATELIER:**\n- Tự thiết kế + sản xuất tại xưởng Việt Nam\n- Không bán hàng **fake, nhái, rep** thương hiệu khác\n- Mỗi SP có **tag + mã QR** xác thực\n\n**Quy trình kiểm soát:**\n1. QC nguyên liệu đầu vào\n2. QC sau may (form, đường chỉ, màu)\n3. QC đóng gói (ảnh + video)\n\n**Nếu phát hiện lỗi từ shop:**\n- Đổi mới **100%**\n- Hoàn tiền **100%** nếu không còn hàng\n- Bồi thường theo **chính sách đổi trả**\n\n**Xác thực nhanh:**\nQuét QR trên tag → hiển thị **thông tin sản phẩm** chính thức.\n\nBạn yên tâm mua sắm nhé!",
+        ],
+
+        /* ===== 13. KÊNH BÁN HÀNG CHÍNH THỨC ===== */
+        'official_channels' => [
+            'patterns' => [
+                '/(bán|bán\s+hàng|có)\s+(trên|ở)\s+(shopee|lazada|tiki|tiktok)/iu',
+                '/(shopee|lazada|tiki|tiktok|facebook|instagram)\s+(shop|của\s+shop|chính\s+thức)/iu',
+                '/kênh\s+(bán|phân\s+phối)\s+(chính\s+thức|nào)/iu',
+                '/(mua|đặt)\s+(hàng)?\s+(ở\s+đâu|chỗ\s+nào|địa\s+chỉ\s+nào)/iu',
+            ],
+            'response' => "**Kênh bán hàng chính thức THE ATELIER:**\n\n**Website (chính):**\n- Đặt hàng + thanh toán online\n- Xem đầy đủ SP, size, tồn kho\n- **Ưu đãi tốt nhất** — voucher độc quyền\n\n**Mạng xã hội:**\n- Facebook: **fb.com/theatelier.vn**\n- Instagram: **@theatelier.vn**\n- TikTok Shop: **@theatelier.vn**\n\n**Sàn TMĐT:**\n- Shopee: **TheAtelier Official**\n- Lazada: **TheAtelier Official**\n\n**Showroom:**\n123 Đường Thời Trang, Q.1, TP.HCM\n\n**Cảnh báo:** Shop **KHÔNG** bán qua Zalo cá nhân, không yêu cầu CK vào STK lạ. Đặt hàng chỉ qua các kênh trên nhé!",
+        ],
+
+        /* ===== 14. PHÀN NÀN / GÓP Ý ===== */
+        'complaint' => [
+            'patterns' => [
+                '/(phàn\s+nàn|khiếu\s+nại|báo\s+cáo|tố\s+cáo)/iu',
+                '/(góp\s+ý|feedback|đánh\s+giá)\s+(shop|cửa\s+hàng|dịch\s+vụ)/iu',
+                '/(dịch\s+vụ|nhân\s+viên|shipper)\s+(tệ|kém|thái\s+độ|không\s+tốt)/iu',
+                '/(sản\s+phẩm|hàng)\s+(bị|bị)\s+(lỗi|hỏng|rách|sai)/iu',
+            ],
+            'response' => "**Tiếp nhận phản hồi THE ATELIER:**\n\n**Mình rất xin lỗi vì trải nghiệm chưa tốt!**\nShop ghi nhận mọi phản hồi để cải thiện.\n\n**Cách gửi phản hồi:**\n1. **Hotline:** 1900 123 456 (8h-22h)\n2. **Email:** support@theatelier.vn\n3. **Form:** Tài khoản → **Gửi phản hồi**\n4. **Chat trực tiếp** với mình — mình sẽ ghi nhận\n\n**Với sản phẩm lỗi:**\n1. Chụp ảnh/video sản phẩm\n2. Gửi qua email hoặc chat\n3. Shop phản hồi trong **2h làm việc**\n4. Đổi mới/hoàn tiền theo chính sách\n\nBạn vui lòng **mô tả vấn đề** để mình chuyển bộ phận xử lý nhanh nhất ạ!",
+        ],
+
+        /* ===== 15. SHIP QUỐC TẾ ===== */
+        'international_shipping' => [
+            'patterns' => [
+                '/(ship|giao|gửi|vận\s+chuyển)\s+(quốc\s+tế|nước\s+ngoài|hải\s+ngoại|mỹ|canada|úc|nhật|hàn)/iu',
+                '/(ở|tại|đang\s+ở)\s+(nước\s+ngoài|mỹ|canada|úc|nhật|hàn|đức|pháp).*(mua|đặt)/iu',
+                '/giao\s+hàng\s+(quốc\s+tế|international)/iu',
+            ],
+            'response' => "**Giao hàng quốc tế:**\n\n**Hiện tại THE ATELIER:**\n- Giao **toàn quốc Việt Nam**\n- **Chưa** hỗ trợ ship quốc tế trực tiếp\n\n**Giải pháp cho khách nước ngoài:**\n1. **Nhờ người thân** ở VN đặt + nhận hàng\n2. **Dùng dịch vụ chuyển phát** (VD: Viettel Post, DHL) — bạn tự sắp xếp\n3. **Liên hệ trực tiếp** hotline để được tư vấn case-by-case\n\n**Lưu ý:**\n- Đơn quốc tế qua dịch vụ trung gian: shop không chịu phí ship + thuế nhập khẩu\n- Chưa hỗ trợ thanh toán quốc tế (chỉ COD/CK VNĐ)\n\nShop đang xem xét mở rộng ship quốc tế trong tương lai ạ!",
+        ],
+
+        /* ===== 16. THỬ ĐỒ TẠI SHOWROOM ===== */
+        'try_on' => [
+            'patterns' => [
+                '/(thử|mặc\s+thử|try)\s+(đồ|hàng|sản\s+phẩm|quần\s+áo)\s+(ở|tại|tại\s+shop)/iu',
+                '/(đến|có\s+thể\s+đến|ghé)\s+(shop|showroom|cửa\s+hàng)\s+(thử|mặc)/iu',
+                '/thử\s+đồ\s+(trước|khi)\s+(mua|mua\s+online)/iu',
+                '/(có|cho)\s+(thử|mặc\s+thử)\s+(đồ|hàng)/iu',
+            ],
+            'response' => "**Thử đồ tại Showroom THE ATELIER:**\n\n**Địa chỉ:**\n123 Đường Thời Trang, P. Bến Nghé, Q.1, TP.HCM\n\n**Giờ mở cửa:**\n- T2-T6: 9:00 - 21:30\n- T7: 9:00 - 22:00\n- CN: 9:30 - 21:00\n\n**Quy trình:**\n1. Đến showroom, nhân viên tư vấn\n2. Chọn mẫu + size muốn thử\n3. Phòng thử **riêng tư**, có gương lớn\n4. Thoải mái thử **không giới hạn** số lượng\n\n**Lưu ý:**\n- **Không cần đặt trước**\n- Có thể **giữ hàng** trước 2h nếu gọi hotline\n- Có bãi xe miễn phí\n\nBạn muốn giữ mẫu nào để đến thử? Nhắn mình nhé!",
+        ],
+
+        /* ===== 17. THỜI GIAN HOÀN TIỀN ===== */
+        'refund_timing' => [
+            'patterns' => [
+                '/bao\s+lâu\s+(thì\s+)?(hoàn\s+tiền|nhận\s+lại\s+tiền|refund)/iu',
+                '/(hoàn\s+tiền|refund)\s+(bao\s+lâu|khi\s+nào|mấy\s+ngày)/iu',
+                '/(tiền\s+hoàn|tiền\s+trả)\s+(vào|đến|về)\s+(đâu|khi\s+nào)/iu',
+            ],
+            'response' => "**Thời gian hoàn tiền:**\n\n**Đơn COD (chưa thanh toán):**\n- Hủy đơn → **không cần hoàn tiền**\n\n**Đơn Chuyển khoản / Ví điện tử:**\n- Shop xử lý trong **12 giờ làm việc**\n- Tiền vào tài khoản: **1-3 ngày** (tùy ngân hàng)\n\n**Đơn Thẻ tín dụng:**\n- Shop xử lý trong **12 giờ**\n- Ngân hàng hoàn: **3-7 ngày làm việc**\n- Có thể hiển thị ở **sao kê kỳ sau**\n\n**Trả hàng hoàn tiền:**\n- Nhận hàng hoàn → kiểm tra **1-2 ngày**\n- Xác nhận → hoàn tiền **3-5 ngày**\n\n**Lưu ý:**\n- Phí ship **không hoàn** (trừ lỗi shop)\n- Mọi giao dịch đều có **email xác nhận**\n\nBạn đang chờ hoàn tiền đơn nào? Cho mình **mã đơn** để kiểm tra ạ!",
+        ],
+
+        /* ===== 18. PHỐI ĐỒ / MIX MATCH ===== */
+        'mix_match' => [
+            'patterns' => [
+                '/(phối|mix|kết\s+hợp)\s+(đồ|outfit|trang\s+phục|với)/iu',
+                '/(gợi\s+ý|tư\s+vấn)\s+(phối|outfit|mix\s+match|style)/iu',
+                '/(mặc|diện)\s+(gì|sao)\s+(đẹp|hợp|với)/iu',
+                '/(áo|quần|váy)\s+(này|đó)\s+(mặc|phối)\s+(với\s+gì|sao)/iu',
+            ],
+            'response' => "**Gợi ý phối đồ THE ATELIER:**\n\n**Cho Nam:**\n- **Áo thun trắng + Quần jean xanh** — basic, dễ mặc\n- **Sơ mi + Quần tây** — lịch sự đi làm\n- **Áo khoác bomber + Jogger** — năng động, đường phố\n- **Polo + Short kaki** — casual cuối tuần\n\n**Cho Nữ:**\n- **Váy hoa + Sandal** — dịu dàng, mùa hè\n- **Sơ mi trắng + Chân váy** — thanh lịch công sở\n- **Áo thun oversize + Jean** — cá tính\n- **Đầm suông + Túi tote** — thanh lịch đi tiệc\n\n**Nguyên tắc phối:**\n- Tối đa **3 màu** trong 1 outfit\n- **Mix basic + statement** — 1 món nổi, còn lại trung tính\n\nBạn đang có món gì? Mình gợi ý phối cụ thể hơn nhé!",
+        ],
+
+        /* ===== 19. FORM / ĐỘ ÔM CỦA SẢN PHẨM ===== */
+        'size_fit' => [
+            'patterns' => [
+                '/(form|dáng)\s+(áo|quần|váy|sản\s+phẩm)\s+(rộng|ôm|vừa|to|nhỏ|slim)/iu',
+                '/(áo|quần|váy|sản\s+phẩm)\s+(này|đó)\s+(rộng|ôm|vừa|to|nhỏ)/iu',
+                '/(có|bị)\s+(rộng|ôm|chật|to)\s+(không|ko|k)/iu',
+                '/(size|sz)\s+(này|đó)\s+(to|nhỏ|rộng|chật)/iu',
+            ],
+            'response' => "**Về form dáng sản phẩm THE ATELIER:**\n\n**Các dòng form phổ biến:**\n- **Regular fit** — vừa vặn, chuẩn form\n- **Slim fit** — ôm nhẹ, tôn dáng\n- **Oversize** — rộng thoải mái, trẻ trung\n- **Relaxed fit** — rộng nhẹ, dễ chịu\n\n**Lưu ý chung:**\n- Áo thun nam thường **regular fit** — đúng size\n- Áo thun nữ **có thể ôm hơn 1 size** — nếu thích rộng nên **tăng 1 size**\n- Quần jean **co giãn nhẹ** — form chuẩn\n- Đầm/váy: thường **ôm nhẹ** ở eo\n\n**Xem chi tiết:**\nMỗi sản phẩm có ghi **form** + **bảng size** trên trang chi tiết.\n\nNếu vẫn phân vân, cho mình **cân nặng + chiều cao**, mình tư vấn size chính xác nhé!",
+        ],
+
+        /* ===== 20. THỜI HẠN KHUYẾN MÃI ===== */
+        'promotion_expiry' => [
+            'patterns' => [
+                '/(sale|khuyến\s+mãi|giảm\s+giá)\s+(đến|tới|kéo\s+dài)\s+(khi\s+nào|bao\s+lâu|ngày)/iu',
+                '/(đến|tới)\s+(khi\s+nào|bao\s+giờ|ngày\s+nào)\s+(hết|kết\s+thúc)\s+(sale|khuyến\s+mãi|giảm\s+giá)/iu',
+                '/(sale|khuyến\s+mãi).*(còn|sắp)\s+(hết|kết\s+thúc)/iu',
+                '/(hạn|thời\s+hạn)\s+(sale|khuyến\s+mãi|voucher)/iu',
+            ],
+            'response' => "**Thời hạn khuyến mãi THE ATELIER:**\n\n**Các chương trình định kỳ:**\n| Dịp | Giảm | Thời gian |\n|---|---|---|\n| **8/3** | 30% SP Nữ | 1/3 - 10/3 |\n| **19/11** | 30% SP Nam | 15/11 - 22/11 |\n| **20/11** | 30% SP Nữ | 18/11 - 25/11 |\n| **Black Friday** | 40-50% | Cuối tháng 11 |\n| **Sinh nhật** | 25% | Cả tháng sinh nhật |\n\n**Voucher:**\n- Mỗi voucher có **hạn sử dụng riêng**\n- Xem chi tiết trên trang **Ưu đãi** hoặc trong **Tài khoản → Voucher của tôi**\n\n**Theo dõi sale sớm:**\n- Đăng ký nhận tin ở footer\n- Follow Facebook/Instagram\n\nHỏi mình \"**đang có chương trình gì**\" để xem chi tiết nhé!",
+        ],
     ];
 }
 
-function chatbotColorDictionary(): array {
-    // [từ không dấu, từ có dấu, an toàn khi đứng một mình?]
-    return [
-        ['xanh', 'xanh', true], ['den', 'đen', true], ['trang', 'trắng', true], ['xam', 'xám', true],
-        ['do', 'đỏ', true], ['vang', 'vàng', true], ['hong', 'hồng', true], ['nau', 'nâu', true],
-        ['tim', 'tím', true], ['cam', 'cam', false], ['be', 'be', false], ['kem', 'kem', false],
-        ['ghi', 'ghi', false], ['navy', 'navy', true],
-    ];
-}
+function chatbotMatchRule(string $message): ?array {
+    $rules = chatbotGetRules();
+    $msg = mb_strtolower(trim($message));
 
-function chatbotParsePrice(string $n): array {
-    $out = ['min' => null, 'max' => null];
-    $amt = '(\d+(?:[.,]\d+)*)\s*(k|nghin|ngan|tr|trieu|cu|d|vnd|dong)?';
-
-    $money = function (string $num, ?string $unit): ?int {
-        $unit = $unit ?? '';
-        if (preg_match('/^\d{1,3}([.,]\d{3})+$/', $num)) $v = (float)preg_replace('/[.,]/', '', $num);
-        else {
-            $v = (float)str_replace(',', '.', $num);
-            if (in_array($unit, ['k', 'nghin', 'ngan'], true)) $v *= 1000;
-            elseif (in_array($unit, ['tr', 'trieu', 'cu'], true)) $v *= 1000000;
-            elseif ($v < 1000) $v *= 1000;            // "dưới 300" → 300k
+    foreach ($rules as $key => $rule) {
+        foreach ($rule['patterns'] as $pattern) {
+            if (preg_match($pattern, $msg)) {
+                return ['response' => $rule['response'], 'rule' => $key];
+            }
         }
-        $v = (int)round($v);
-        return ($v >= 10000 && $v <= 20000000) ? $v : null;
-    };
-
-    // 1tr2 → 1.200.000
-    $n = preg_replace_callback('/(\d+)\s*(?:tr|trieu|cu)\s*(\d)\b/', fn($m) => ($m[1] * 1000000 + $m[2] * 100000) . 'd', $n);
-
-    if (preg_match('/\btu\s*' . $amt . '\s*(?:den|toi|-)\s*' . $amt . '/', $n, $m)) {
-        $u1 = $m[2] !== '' ? $m[2] : $m[4];
-        $a = $money($m[1], $u1); $b = $money($m[3], $m[4] ?: null);
-        if ($a && $b) { $out['min'] = min($a, $b); $out['max'] = max($a, $b); return $out; }
     }
-    if (preg_match('/\b(\d+(?:[.,]\d+)*)\s*-\s*' . $amt . '/', $n, $m) && ($m[3] ?? '') !== '') {
-        $a = $money($m[1], $m[3]); $b = $money($m[2], $m[3]);
-        if ($a && $b) { $out['min'] = min($a, $b); $out['max'] = max($a, $b); return $out; }
-    }
-    if (preg_match('/\b(?:duoi|toi da|khong qua|re hon|nho hon|ngan sach|budget|<)\s*' . $amt . '/', $n, $m)) {
-        if ($v = $money($m[1], $m[2] ?? null)) { $out['max'] = $v; return $out; }
-    }
-    if (preg_match('/\b(?:tren|toi thieu|lon hon|hon|>)\s*' . $amt . '/', $n, $m)) {
-        if ($v = $money($m[1], $m[2] ?? null)) { $out['min'] = $v; return $out; }
-    }
-    if (preg_match('/\b(?:tam|khoang|loanh quanh|trong tam|gia)\s*' . $amt . '/', $n, $m)) {
-        if ($v = $money($m[1], $m[2] ?? null)) { $out['min'] = (int)($v * 0.8); $out['max'] = (int)($v * 1.2); return $out; }
-    }
-    if (preg_match('/(?<![\d.,])(\d+(?:[.,]\d+)?)\s*(k|nghin|ngan|tr|trieu|cu|d)\b/', $n, $m)) {
-        if ($v = $money($m[1], $m[2])) { $out['min'] = (int)($v * 0.75); $out['max'] = (int)($v * 1.25); }
-    }
-    return $out;
-}
-
-function chatbotExtractEntities(string $raw, string $n): array {
-    $r = mb_strtolower($raw, 'UTF-8');
-    $e = ['gender' => null, 'types' => [], 'color' => null, 'min_price' => null, 'max_price' => null,
-          'size' => null, 'sort' => null, 'on_sale' => false];
-
-    // --- Giới tính
-    $male   = (bool)preg_match('/(?<![\p{L}])(nam|men|boy|đàn ông|con trai)(?![\p{L}])/u', $r);
-    $female = (bool)preg_match('/(?<![\p{L}])(nữ|nu|women|woman|girl|phụ nữ|con gái|bạn gái)(?![\p{L}])|váy|đầm/u', $r);
-    if ($male && !$female) $e['gender'] = 'male';
-    elseif ($female && !$male) $e['gender'] = 'female';
-
-    // --- Loại sản phẩm
-    $found = [];
-    foreach (chatbotTypeDictionary() as [$normRe, $rawRe, $kw]) {
-        $hit = ($normRe && preg_match('/\b(?:' . $normRe . ')\b/u', $n))
-            || ($rawRe && preg_match('/(?<![\p{L}])(?:' . $rawRe . ')(?![\p{L}])/u', $r));
-        if ($hit) foreach ((array)$kw as $k) $found[$k] = true;
-    }
-    if (!$found) {
-        if (preg_match('/(?<![\p{L}])quần(?![\p{L}])/u', $r)) $found['quần'] = true;
-        if (preg_match('/(?<![\p{L}])áo(?![\p{L}])/u', $r) || preg_match('/\bao\b/', $n)) $found['áo'] = true;
-    }
-    $e['types'] = array_keys($found);
-
-    // --- Màu sắc
-    foreach (chatbotColorDictionary() as [$nw, $aw, $safe]) {
-        $hit = preg_match('/\bmau\s+' . $nw . '\b/', $n)
-            || ($safe ? preg_match('/(?<![\p{L}])' . $aw . '(?![\p{L}])/u', $r) : preg_match('/màu\s+' . $aw . '(?![\p{L}])/u', $r));
-        if ($hit) { $e['color'] = $aw; break; }
-    }
-    if (!$e['color']) {
-        $en = ['black' => 'đen', 'white' => 'trắng', 'grey' => 'xám', 'gray' => 'xám', 'red' => 'đỏ', 'blue' => 'xanh',
-               'green' => 'xanh', 'pink' => 'hồng', 'beige' => 'be', 'brown' => 'nâu'];
-        foreach ($en as $k => $v) if (preg_match('/\b' . $k . '\b/', $n)) { $e['color'] = $v; break; }
-    }
-
-    // --- Size
-    if (preg_match('/(?<![\p{L}0-9])(?:size|sz|cỡ)\s*(2xl|xxl|xl|l|m|s)(?![\p{L}0-9])/u', $r, $m)
-        || preg_match('/(?<![a-z0-9])(2xl|xxl|xl)(?![a-z0-9])/', $n, $m)) {
-        $s = strtoupper($m[1]);
-        $e['size'] = $s === 'XXL' ? '2XL' : $s;
-    }
-
-    // --- Giá
-    $p = chatbotParsePrice($n);
-    $e['min_price'] = $p['min']; $e['max_price'] = $p['max'];
-
-    // --- Sắp xếp / khuyến mãi
-    if (preg_match('/\b(re nhat|gia thap|gia re|tiet kiem nhat|re re)\b/', $n)) $e['sort'] = 'price_asc';
-    elseif (preg_match('/\b(dat nhat|cao cap|gia cao|sang nhat|xin nhat)\b/', $n)) $e['sort'] = 'price_desc';
-    elseif (preg_match('/\b(moi nhat|hang moi|moi ve|new arrival)\b/', $n)) $e['sort'] = 'newest';
-    elseif (preg_match('/\b(ban chay|hot nhat|hot trend|pho bien|nhieu nguoi mua|best ?seller)\b/', $n)) $e['sort'] = 'best_seller';
-    if (preg_match('/\b(giam gia|dang sale|hang sale|do sale|sale off|dang giam)\b/', $n) && !preg_match('/giam can/', $n)) {
-        $e['on_sale'] = true;
-        if (!$e['sort']) $e['sort'] = 'discount';
-    }
-    return $e;
-}
-
-function chatbotHasProductEntities(array $e): bool {
-    return !empty($e['types']) || !empty($e['color']) || !empty($e['min_price']) || !empty($e['max_price'])
-        || !empty($e['size']) || !empty($e['sort']) || !empty($e['on_sale']);
-}
-
-function chatbotHasSearchVerb(string $n): bool {
-    return (bool)preg_match('/\b(tim|kiem|goi y|tu van|cho xem|xem|mua|muon mua|can mua|shop co|co ban|recommend|suggest|show|loai nao|mau nao)\b/', $n);
-}
-
-function chatbotEntitiesToFilter(array $e): array {
-    $f = [];
-    if (!empty($e['types']))     $f['keywords']  = $e['types'];
-    if (!empty($e['gender']))    $f['gender']    = $e['gender'];
-    if (!empty($e['color']))     $f['color']     = $e['color'];
-    if (!empty($e['min_price'])) $f['min_price'] = $e['min_price'];
-    if (!empty($e['max_price'])) $f['max_price'] = $e['max_price'];
-    if (!empty($e['size']))      $f['size']      = $e['size'];
-    if (!empty($e['sort']))      $f['sort']      = $e['sort'];
-    if (!empty($e['on_sale']))   $f['on_sale']   = true;
-    return $f;
-}
-
-function chatbotDescribeCriteria(array $e): string {
-    $p = [];
-    if (!empty($e['types']))  $p[] = implode('/', $e['types']);
-    if (!empty($e['gender'])) $p[] = chatbotGenderLabel($e['gender']);
-    if (!empty($e['color']))  $p[] = 'màu ' . $e['color'];
-    if (!empty($e['min_price']) && !empty($e['max_price'])) $p[] = chatbotVnd($e['min_price']) . ' – ' . chatbotVnd($e['max_price']);
-    elseif (!empty($e['max_price'])) $p[] = 'dưới ' . chatbotVnd($e['max_price']);
-    elseif (!empty($e['min_price'])) $p[] = 'trên ' . chatbotVnd($e['min_price']);
-    if (!empty($e['size']))   $p[] = 'size ' . $e['size'];
-    if (!empty($e['on_sale'])) $p[] = 'đang giảm giá';
-    $labels = ['price_asc' => 'giá rẻ nhất', 'price_desc' => 'giá cao nhất', 'newest' => 'mới nhất', 'best_seller' => 'bán chạy'];
-    if (!empty($e['sort']) && isset($labels[$e['sort']])) $p[] = $labels[$e['sort']];
-    return implode(' · ', $p);
+    return null;
 }
 
 /* ============================================================
-   💾 SESSION CONTEXT
+   EXTRACT PRODUCT KEYWORD
+   ============================================================ */
+function chatbotExtractProductKeyword(string $message): ?string {
+    $msg = mb_strtolower(trim($message));
+
+    if (preg_match('/(đồ|quần\s+áo|thời\s+trang|sản\s+phẩm)?\s*(nam|men|boy)\b/iu', $msg)
+        && !preg_match('/(nữ|girl|women)/iu', $msg)) {
+        return 'nam';
+    }
+    if (preg_match('/(váy|đầm|chân\s+váy)/iu', $msg)
+        || preg_match('/(đồ|quần\s+áo|thời\s+trang|sản\s+phẩm)?\s*(nữ|nu|girl|women)\b/iu', $msg)) {
+        return 'nữ';
+    }
+
+    $keywords = [
+        'áo thun', 'áo sơ mi', 'áo khoác', 'áo len', 'áo polo',
+        'quần jean', 'quần tây', 'quần short', 'quần jogger', 'quần',
+        'váy', 'đầm', 'chân váy', 'áo', 'sơ mi',
+        'giày', 'dép', 'túi', 'balo', 'mũ', 'nón', 'phụ kiện',
+    ];
+    foreach ($keywords as $kw) {
+        if (mb_strpos($msg, $kw) !== false) return $kw;
+    }
+
+    if (preg_match('/(tìm|search|kiếm|gợi ý|gợi í|recommend|có gì)/iu', $msg)) {
+        return 'all';
+    }
+    return null;
+}
+
+/* ============================================================
+   DETECT STOCK QUERY
+   ============================================================ */
+function chatbotDetectStockQuery(string $message): ?array {
+    $msg = mb_strtolower(trim($message));
+
+    // Phải có từ khóa tồn kho
+    if (!preg_match('/(còn|hết|tồn|available)/iu', $msg)) return null;
+
+    // Detect size
+    $size = null;
+    if (preg_match('/(?:size|cỡ|sz)\s*(2xl|xl|l|m|s)\b/iu', $msg, $m)) {
+        $size = strtoupper($m[1]);
+    } elseif (preg_match('/\b(2xl|xl|l|m|s)\b/iu', $msg, $m)) {
+        $size = strtoupper($m[1]);
+    }
+    if ($size && !in_array($size, ['S','M','L','XL','2XL'], true)) $size = null;
+
+    // Bỏ stop words
+    $cleaned = preg_replace([
+        '/\b(còn|hết|tồn|không|ko|k|ạ|vậy|thì|cho|mình|hỏi|shop|ơi|và|có|không\?)\b/iu',
+        '/(?:size|cỡ|sz)\s*(2xl|xl|l|m|s)/iu',
+        '/\b(2xl|xl|l|m|s)\b/iu',
+        '/[?.,!;:]/u',
+    ], ' ', $msg);
+
+    $keyword = trim(preg_replace('/\s+/', ' ', $cleaned));
+    if (mb_strlen($keyword) < 3) return null;
+
+    return ['keyword' => $keyword, 'size' => $size];
+}
+
+/* ============================================================
+   DETECT PRODUCT REFERENCE ("sản phẩm thứ X")
+   ============================================================ */
+function chatbotDetectProductReference(string $message): ?int {
+    $msg = mb_strtolower(trim($message));
+
+    $ordinalMap = [
+        'nhất' => 0, 'đầu tiên' => 0, 'đầu' => 0, '1' => 0, 'một' => 0,
+        'hai' => 1, 'nhì' => 1, '2' => 1,
+        'ba' => 2, '3' => 2,
+        'tư' => 3, 'bốn' => 3, '4' => 3,
+        'năm' => 4, '5' => 4,
+    ];
+
+    $patterns = [
+        '/(?:sản\s+phẩm|cái|món|item|sp)\s+(?:thứ\s+|số\s+)?([0-9]+|nhất|nhì|ba|tư|bốn|năm|một|hai|đầu\s+tiên)/iu',
+        '/^(?:thứ|số)\s+([0-9]+|nhất|nhì|ba|tư|bốn|năm|một|hai)/iu',
+        '/tìm\s+hiểu\s+(?:về\s+)?(?:sản\s+phẩm\s+|cái\s+|món\s+)?(?:thứ\s+|số\s+)?([0-9]+|nhất|nhì|ba|tư|bốn|năm|một|hai|đầu\s+tiên)/iu',
+        '/xem\s+(?:chi\s+tiết\s+)?(?:sản\s+phẩm\s+|cái\s+|món\s+)?(?:thứ\s+|số\s+)?([0-9]+|nhất|nhì|ba|tư|bốn|năm|một|hai|đầu\s+tiên)/iu',
+    ];
+
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $msg, $m)) {
+            $key = trim(mb_strtolower($m[1]));
+            if (isset($ordinalMap[$key])) return $ordinalMap[$key];
+        }
+    }
+
+    if (preg_match('/(?:sản\s+phẩm|cái|món|sp)\s+(?:này|đó|kia|ấy)/iu', $msg)) {
+        return 0;
+    }
+    if (preg_match('/\bvề\s+(?:sản\s+phẩm\s+)?(?:số\s+|thứ\s+)?([0-9]+)\b/iu', $msg, $m)) {
+        $idx = (int)$m[1] - 1;
+        return $idx >= 0 ? $idx : null;
+    }
+    return null;
+}
+
+/* ============================================================
+   SESSION CONTEXT
    ============================================================ */
 function chatbotSaveProductContext(array $products): void {
-    chatbotSession();
+    if (empty($products)) return;
     $ids = [];
-    foreach ($products as $p) if (!empty($p['id'])) $ids[] = (int)$p['id'];
-    if ($ids) {
+    foreach ($products as $p) {
+        if (!empty($p['id'])) $ids[] = (int)$p['id'];
+    }
+    if (!empty($ids)) {
         $_SESSION['chat_last_products']    = $ids;
         $_SESSION['chat_last_products_at'] = time();
-        if (count($ids) === 1) chatbotSetFocus($ids[0]); else unset($_SESSION['chat_focus']);
     }
 }
 
 function chatbotLoadProductContext(): array {
-    chatbotSession();
     $ids = $_SESSION['chat_last_products'] ?? [];
     $at  = $_SESSION['chat_last_products_at'] ?? 0;
     if (time() - $at > 600) {
@@ -436,1109 +707,1029 @@ function chatbotLoadProductContext(): array {
     return $ids;
 }
 
-function chatbotSetFocus(int $id): void { chatbotSession(); $_SESSION['chat_focus'] = ['id' => $id, 'at' => time()]; }
-
-function chatbotGetFocusId(): ?int {
-    chatbotSession();
-    $f = $_SESSION['chat_focus'] ?? null;
-    if ($f && time() - ($f['at'] ?? 0) < 900) return (int)$f['id'];
-    unset($_SESSION['chat_focus']);
-    return null;
-}
-
-function chatbotSetPending(string $type, array $data = []): void {
-    chatbotSession();
-    $_SESSION['chat_pending'] = ['type' => $type, 'data' => $data, 'at' => time()];
-}
-function chatbotGetPending(): ?array {
-    chatbotSession();
-    $p = $_SESSION['chat_pending'] ?? null;
-    if ($p && time() - ($p['at'] ?? 0) < 300) return $p;
-    unset($_SESSION['chat_pending']);
-    return null;
-}
-function chatbotClearPending(): void { chatbotSession(); unset($_SESSION['chat_pending']); }
-
-function chatbotRemember(string $user, string $bot): void {
-    chatbotSession();
-    $h = $_SESSION['chat_history'] ?? [];
-    $h[] = ['role' => 'user', 'content' => mb_substr($user, 0, 300)];
-    $h[] = ['role' => 'assistant', 'content' => mb_substr(strip_tags($bot), 0, 400)];
-    $_SESSION['chat_history'] = array_slice($h, -16);
-}
-
 /* ============================================================
-   📦 TRUY VẤN SẢN PHẨM
+   PRODUCT QUERIES
    ============================================================ */
+function chatbotGetProductById(PDO $pdo, int $productId): ?array {
+    if ($productId <= 0) return null;
+    try {
+        $stmt = $pdo->prepare("
+            SELECT p.id, p.name, p.price, p.discount_percent, p.image_url,
+                   p.description, p.gender, p.sold_count, p.category_id,
+                   c.name AS category_name,
+                   CASE WHEN p.discount_percent > 0
+                        THEN ROUND(p.price * (100 - p.discount_percent) / 100)
+                        ELSE p.price END AS final_price
+            FROM products p
+            LEFT JOIN categories c ON p.category_id = c.id
+            WHERE p.id = ? LIMIT 1
+        ");
+        $stmt->execute([$productId]);
+        $product = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$product) return null;
+
+        $product['sizes']       = chatbotGetProductSizes($pdo, $productId);
+        $product['total_stock'] = array_sum(array_column($product['sizes'], 'stock'));
+        $product['gender']      = chatbotDetectGenderFromName($product['name'], $product['gender'] ?? 'unisex');
+        return $product;
+    } catch (Exception $e) {
+        error_log('chatbotGetProductById error: ' . $e->getMessage());
+        return null;
+    }
+}
+
 function chatbotGetProductSizes(PDO $pdo, int $productId): array {
     try {
-        $stmt = $pdo->prepare("SELECT size, stock FROM product_variants WHERE product_id = ? ORDER BY FIELD(size, 'S', 'M', 'L', 'XL', '2XL')");
+        $stmt = $pdo->prepare("
+            SELECT size, stock FROM product_sizes
+            WHERE product_id = ?
+            ORDER BY FIELD(size, 'S', 'M', 'L', 'XL', '2XL')
+        ");
         $stmt->execute([$productId]);
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     } catch (Exception $e) { return []; }
 }
 
-function chatbotGetProductById(PDO $pdo, int $productId): ?array {
-    if ($productId <= 0) return null;
-    try {
-        $stmt = $pdo->prepare("
-            SELECT p.id, p.name, p.base_price AS price, p.sale_price, p.thumbnail AS image_url, p.description,
-                   c.name AS category_name,
-                   CASE WHEN p.sale_price IS NOT NULL THEN ROUND((p.base_price - p.sale_price) / p.base_price * 100) ELSE 0 END AS discount_percent
-            FROM products p LEFT JOIN categories c ON p.category_id = c.id
-            WHERE p.id = ? LIMIT 1");
-        $stmt->execute([$productId]);
-        $product = $stmt->fetch(PDO::FETCH_ASSOC);
-        if (!$product) return null;
-        $product['sizes']       = chatbotGetProductSizes($pdo, $productId);
-        $product['total_stock'] = array_sum(array_column($product['sizes'], 'stock'));
-        $product['gender']      = chatbotDetectGenderFromName($product['name'], 'unisex');
-        return $product;
-    } catch (Exception $e) { return null; }
-}
-
-/**
- * Bộ lọc sản phẩm. Khóa hỗ trợ:
- *  keywords[] (khớp tên/danh mục, OR) · any_keywords[] (tên/mô tả/danh mục) · keyword (cũ)
- *  gender · color · size · min_price · max_price (theo GIÁ SAU GIẢM) · on_sale · in_stock
- *  exclude_ids[] · sort(best_seller|price_asc|price_desc|newest|discount) · limit
- */
-function chatbotGetProductsByFilter(PDO $pdo, array $f = []): array {
+function chatbotGetProductsByFilter(PDO $pdo, array $filters = []): array {
     try {
         $where = ['1=1']; $params = [];
 
-        $groups = [];
-        if (!empty($f['keywords']))     $groups[] = [(array)$f['keywords'], false];
-        if (!empty($f['any_keywords'])) $groups[] = [(array)$f['any_keywords'], true];
-        if (!empty($f['keyword']))      $groups[] = [[$f['keyword']], true];
-        foreach ($groups as [$list, $withDesc]) {
-            $or = [];
-            foreach ($list as $kw) {
-                $like = '%' . mb_strtolower(trim($kw)) . '%';
-                if ($withDesc) { $or[] = '(LOWER(p.name) LIKE ? OR LOWER(p.description) LIKE ? OR LOWER(c.name) LIKE ?)'; array_push($params, $like, $like, $like); }
-                else           { $or[] = '(LOWER(p.name) LIKE ? OR LOWER(c.name) LIKE ?)'; array_push($params, $like, $like); }
-            }
-            if ($or) $where[] = '(' . implode(' OR ', $or) . ')';
+        if (!empty($filters['keyword'])) {
+            $kw = '%' . mb_strtolower(trim($filters['keyword'])) . '%';
+            $where[] = "(LOWER(p.name) LIKE ? OR LOWER(p.description) LIKE ?)";
+            $params[] = $kw; $params[] = $kw;
         }
-
-        if (!empty($f['color'])) {
-            $like = '%' . mb_strtolower($f['color']) . '%';
-            $where[] = '(LOWER(p.name) LIKE ? OR LOWER(p.description) LIKE ?)';
-            array_push($params, $like, $like);
-        }
-        if (!empty($f['gender']) && in_array($f['gender'], ['male', 'female'], true)) {
-            if ($f['gender'] === 'male') {
-                $where[] = "((LOWER(p.name) LIKE '%nam%' OR LOWER(p.name) LIKE '% men%' OR LOWER(p.name) LIKE '%unisex%') AND LOWER(p.name) NOT LIKE '%nữ%' AND LOWER(p.name) NOT LIKE '%women%')";
+        if (!empty($filters['gender']) && in_array($filters['gender'], ['male','female'], true)) {
+            if ($filters['gender'] === 'male') {
+                $where[] = "(p.gender = 'male' OR (p.gender = 'unisex'
+                    AND (LOWER(p.name) LIKE '%nam%' OR LOWER(p.name) LIKE '%men%')
+                    AND LOWER(p.name) NOT LIKE '%nữ%' AND LOWER(p.name) NOT LIKE '%nu %'))";
             } else {
-                $where[] = "(LOWER(p.name) LIKE '%nữ%' OR LOWER(p.name) LIKE '%váy%' OR LOWER(p.name) LIKE '%đầm%' OR LOWER(p.name) LIKE '%women%' OR LOWER(p.name) LIKE '%unisex%')";
+                $where[] = "(p.gender = 'female' OR (p.gender = 'unisex'
+                    AND (LOWER(p.name) LIKE '%nữ%' OR LOWER(p.name) LIKE '%nu %'
+                        OR LOWER(p.name) LIKE '%váy%' OR LOWER(p.name) LIKE '%đầm%')))";
             }
         }
-        $eff = 'COALESCE(p.sale_price, p.base_price)';
-        if (!empty($f['min_price'])) { $where[] = "$eff >= ?"; $params[] = (int)$f['min_price']; }
-        if (!empty($f['max_price'])) { $where[] = "$eff <= ?"; $params[] = (int)$f['max_price']; }
-        if (!empty($f['on_sale']))   $where[] = 'p.sale_price IS NOT NULL';
-        if (!empty($f['size']) && in_array($f['size'], chatbotSizeOrder(), true)) {
-            $where[] = 'EXISTS (SELECT 1 FROM product_variants pv WHERE pv.product_id = p.id AND pv.size = ? AND pv.stock > 0)';
-            $params[] = $f['size'];
-        } elseif (!empty($f['in_stock'])) {
-            $where[] = 'EXISTS (SELECT 1 FROM product_variants ps WHERE ps.product_id = p.id AND ps.stock > 0)';
+        if (!empty($filters['category'])) {
+            $where[] = "p.category_id = ?"; $params[] = (int)$filters['category'];
         }
-        if (!empty($f['exclude_ids'])) {
-            $ids = array_map('intval', (array)$f['exclude_ids']);
-            $where[] = 'p.id NOT IN (' . implode(',', $ids) . ')';
+        if (!empty($filters['min_price'])) {
+            $where[] = "p.price >= ?"; $params[] = (int)$filters['min_price'];
+        }
+        if (!empty($filters['max_price'])) {
+            $where[] = "p.price <= ?"; $params[] = (int)$filters['max_price'];
+        }
+        if (!empty($filters['on_sale'])) {
+            $where[] = "p.discount_percent > 0";
+        }
+        if (!empty($filters['in_stock'])) {
+            $where[] = "EXISTS (SELECT 1 FROM product_sizes ps WHERE ps.product_id = p.id AND ps.stock > 0)";
         }
 
-        $sortKey = $f['sort'] ?? 'default';
         $sortMap = [
-            'best_seller' => 'p.id DESC',
-            'price_asc'   => "$eff ASC",
-            'price_desc'  => "$eff DESC",
-            'newest'      => 'p.id DESC',
-            'discount'    => '(CASE WHEN p.sale_price IS NOT NULL THEN (p.base_price - p.sale_price) / p.base_price ELSE 0 END) DESC, p.id DESC',
-            'default'     => 'p.id DESC',
+            'best_seller' => 'p.sold_count DESC, p.id DESC',
+            'price_asc'   => 'p.price ASC',
+            'price_desc'  => 'p.price DESC',
+            'newest'      => 'p.created_at DESC, p.id DESC',
+            'discount'    => 'p.discount_percent DESC, p.sold_count DESC',
+            'default'     => 'p.sold_count DESC, p.id DESC',
         ];
-        $limit = max(1, min(50, (int)($f['limit'] ?? 4)));
+        $sort   = $sortMap[$filters['sort'] ?? 'default'] ?? $sortMap['default'];
+        $limit  = max(1, min(50, (int)($filters['limit']  ?? 4)));
+        $offset = max(0, (int)($filters['offset'] ?? 0));
 
-        $build = function (string $order) use ($where, $limit): string {
-            return "SELECT p.id, p.name, p.base_price AS price, p.sale_price, p.thumbnail AS image_url,
-                    CASE WHEN p.sale_price IS NOT NULL THEN ROUND((p.base_price - p.sale_price) / p.base_price * 100) ELSE 0 END AS discount_percent,
-                    (SELECT COALESCE(SUM(stock), 0) FROM product_variants WHERE product_id = p.id) AS total_stock
-                FROM products p LEFT JOIN categories c ON p.category_id = c.id
-                WHERE " . implode(' AND ', $where) . " ORDER BY $order LIMIT $limit";
-        };
+        $sql = "
+            SELECT p.id, p.name, p.price, p.discount_percent, p.image_url,
+                   p.gender, p.sold_count, p.category_id, c.name AS category_name,
+                   CASE WHEN p.discount_percent > 0
+                        THEN ROUND(p.price * (100 - p.discount_percent) / 100)
+                        ELSE p.price END AS final_price,
+                   (SELECT COALESCE(SUM(stock), 0) FROM product_sizes WHERE product_id = p.id) AS total_stock
+            FROM products p
+            LEFT JOIN categories c ON p.category_id = c.id
+            WHERE " . implode(' AND ', $where) . "
+            ORDER BY $sort LIMIT $limit OFFSET $offset
+        ";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        $rows = null;
-        if ($sortKey === 'best_seller') {   // [CHỈNH] giả định bảng order_items(product_id, quantity)
-            try {
-                $stmt = $pdo->prepare($build('(SELECT COALESCE(SUM(oi.quantity),0) FROM order_items oi WHERE oi.product_id = p.id) DESC, p.id DESC'));
-                $stmt->execute($params);
-                $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            } catch (Exception $e) { $rows = null; }
+        foreach ($rows as &$r) {
+            $r['gender'] = chatbotDetectGenderFromName($r['name'], $r['gender'] ?? 'unisex');
         }
-        if ($rows === null) {
-            $stmt = $pdo->prepare($build($sortMap[$sortKey] ?? $sortMap['default']));
-            $stmt->execute($params);
-            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return $rows;
+    } catch (Exception $e) {
+        error_log('chatbotGetProductsByFilter error: ' . $e->getMessage());
+        return [];
+    }
+}
+
+function chatbotGetDiscountedProducts(PDO $pdo, int $limit = 4): array {
+    return chatbotGetProductsByFilter($pdo, ['on_sale' => true, 'sort' => 'discount', 'limit' => $limit]);
+}
+
+function chatbotGetNewestProducts(PDO $pdo, int $limit = 4): array {
+    return chatbotGetProductsByFilter($pdo, ['sort' => 'newest', 'limit' => $limit]);
+}
+
+function chatbotGetProductsByCategory(PDO $pdo, int $categoryId, int $limit = 4): array {
+    return chatbotGetProductsByFilter($pdo, ['category' => $categoryId, 'limit' => $limit]);
+}
+
+function chatbotGetRelatedProducts(PDO $pdo, int $productId, int $limit = 3): array {
+    try {
+        $stmt = $pdo->prepare("SELECT category_id, gender FROM products WHERE id = ? LIMIT 1");
+        $stmt->execute([$productId]);
+        $base = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$base) return [];
+
+        $where = ['p.id != ?']; $params = [$productId];
+        if (!empty($base['category_id'])) {
+            $where[] = "p.category_id = ?"; $params[] = $base['category_id'];
+        } elseif (!empty($base['gender']) && $base['gender'] !== 'unisex') {
+            $where[] = "p.gender = ?"; $params[] = $base['gender'];
         }
-        foreach ($rows as &$r) $r['gender'] = chatbotDetectGenderFromName($r['name'], 'unisex');
-        unset($r);
+
+        $limit = max(1, min(10, $limit));
+        $sql = "SELECT id, name, price, discount_percent, image_url, gender
+                FROM products p
+                WHERE " . implode(' AND ', $where) . "
+                ORDER BY sold_count DESC, id DESC LIMIT $limit";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($rows as &$r) {
+            $r['gender'] = chatbotDetectGenderFromName($r['name'], $r['gender'] ?? 'unisex');
+        }
         return $rows;
     } catch (Exception $e) { return []; }
 }
 
-/** Tìm thông minh: thử đủ tiêu chí → nới lỏng dần (màu → giá → size → sale) */
-function chatbotSmartSearch(PDO $pdo, array $e, int $limit = 4, array $extra = []): array {
-    $steps = [
-        [['color'], 'màu sắc'],
-        [['min_price', 'max_price'], 'khoảng giá'],
-        [['size'], 'size'],
-        [['on_sale'], 'khuyến mãi'],
-    ];
-    $cur = $e; $dropped = [];
-    for ($i = 0; $i <= count($steps); $i++) {
-        if ($i > 0) {
-            [$fields, $label] = $steps[$i - 1];
-            $has = false;
-            foreach ($fields as $fl) if (!empty($cur[$fl])) $has = true;
-            if (!$has) continue;
-            foreach ($fields as $fl) $cur[$fl] = ($fl === 'on_sale') ? false : null;
-            $dropped[] = $label;
-        }
-        $rows = chatbotGetProductsByFilter($pdo, chatbotEntitiesToFilter($cur) + $extra + ['limit' => $limit, 'in_stock' => true]);
-        if ($rows) return ['products' => $rows, 'dropped' => $dropped, 'criteria' => $cur];
-    }
-    $rows = chatbotGetProductsByFilter($pdo, chatbotEntitiesToFilter($cur) + $extra + ['limit' => $limit]);
-    return ['products' => $rows, 'dropped' => $dropped, 'criteria' => $cur];
-}
-
-function chatbotGetDiscountedProducts(PDO $pdo, int $limit = 4): array { return chatbotGetProductsByFilter($pdo, ['on_sale' => true, 'sort' => 'discount', 'limit' => $limit]); }
-function chatbotGetNewestProducts(PDO $pdo, int $limit = 4): array { return chatbotGetProductsByFilter($pdo, ['sort' => 'newest', 'limit' => $limit]); }
-
 function chatbotGetCategories(PDO $pdo): array {
     try {
-        return $pdo->query("SELECT c.id, c.name, c.slug, (SELECT COUNT(*) FROM products WHERE category_id = c.id) AS product_count FROM categories c ORDER BY c.name ASC")->fetchAll(PDO::FETCH_ASSOC);
+        return $pdo->query("
+            SELECT c.id, c.name, c.slug,
+                (SELECT COUNT(*) FROM products WHERE category_id = c.id) AS product_count
+            FROM categories c ORDER BY c.name ASC
+        ")->fetchAll(PDO::FETCH_ASSOC);
     } catch (Exception $e) { return []; }
 }
 
 function chatbotGetShopStats(PDO $pdo): array {
     try {
-        $s = [];
-        $s['total_products']    = (int)$pdo->query("SELECT COUNT(*) FROM products")->fetchColumn();
-        $s['products_in_stock'] = (int)$pdo->query("SELECT COUNT(DISTINCT product_id) FROM product_variants WHERE stock > 0")->fetchColumn();
-        $s['products_on_sale']  = (int)$pdo->query("SELECT COUNT(*) FROM products WHERE sale_price IS NOT NULL")->fetchColumn();
-        $row = $pdo->query("SELECT MIN(base_price) AS min_p, MAX(base_price) AS max_p FROM products")->fetch(PDO::FETCH_ASSOC);
-        $s['price_min'] = (float)($row['min_p'] ?? 0);
-        $s['price_max'] = (float)($row['max_p'] ?? 0);
-        return $s;
-    } catch (Exception $e) { return ['total_products' => 0, 'products_in_stock' => 0, 'products_on_sale' => 0, 'price_min' => 0, 'price_max' => 0]; }
+        $stats = [];
+        $stats['total_products']    = (int)$pdo->query("SELECT COUNT(*) FROM products")->fetchColumn();
+        $stats['total_categories']  = (int)$pdo->query("SELECT COUNT(*) FROM categories")->fetchColumn();
+        $stats['products_in_stock'] = (int)$pdo->query("SELECT COUNT(DISTINCT product_id) FROM product_sizes WHERE stock > 0")->fetchColumn();
+        $stats['products_on_sale']  = (int)$pdo->query("SELECT COUNT(*) FROM products WHERE discount_percent > 0")->fetchColumn();
+
+        $priceRow = $pdo->query("SELECT MIN(price) as min_p, MAX(price) as max_p FROM products")->fetch(PDO::FETCH_ASSOC);
+        $stats['price_min'] = (float)($priceRow['min_p'] ?? 0);
+        $stats['price_max'] = (float)($priceRow['max_p'] ?? 0);
+        return $stats;
+    } catch (Exception $e) { return []; }
 }
 
-/* ---------- Tồn kho ---------- */
+/* ============================================================
+   CHECK STOCK
+   ============================================================ */
 function chatbotCheckStock(PDO $pdo, string $keyword, ?string $size): ?array {
     try {
-        $like = '%' . mb_strtolower(trim($keyword)) . '%';
-        $stmt = $pdo->prepare("SELECT id, name, base_price AS price, sale_price, thumbnail AS image_url FROM products WHERE LOWER(name) LIKE ? OR LOWER(description) LIKE ? ORDER BY id DESC LIMIT 1");
-        $stmt->execute([$like, $like]);
+        $kw   = mb_strtolower(trim($keyword));
+        $like = '%' . $kw . '%';
+
+        $stmt = $pdo->prepare("
+            SELECT id, name, price, discount_percent, image_url, gender
+            FROM products
+            WHERE LOWER(name) LIKE ? OR LOWER(description) LIKE ?
+            ORDER BY
+                CASE WHEN LOWER(name) = ? THEN 0
+                     WHEN LOWER(name) LIKE ? THEN 1
+                     ELSE 2 END,
+                sold_count DESC, id DESC
+            LIMIT 1
+        ");
+        $stmt->execute([$like, $like, $kw, $kw . '%']);
         $product = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$product) return null;
-        return ['product' => $product, 'sizes' => chatbotGetProductSizes($pdo, (int)$product['id'])];
-    } catch (Exception $e) { return null; }
+
+        $sizes = chatbotGetProductSizes($pdo, (int)$product['id']);
+        return ['product' => $product, 'sizes' => $sizes];
+    } catch (Exception $e) {
+        error_log('chatbotCheckStock error: ' . $e->getMessage());
+        return null;
+    }
 }
 
 function chatbotFormatStockResponse(array $data, ?string $askedSize): string {
-    $product = $data['product']; $sizes = $data['sizes']; $name = $product['name'];
+    $product = $data['product'];
+    $sizes   = $data['sizes'];
+    $name    = $product['name'];
+
     $sizeMap = [];
     foreach ($sizes as $s) $sizeMap[strtoupper($s['size'] ?? '')] = (int)($s['stock'] ?? 0);
 
     if ($askedSize) {
         $stock = $sizeMap[$askedSize] ?? -1;
-        if ($stock > 0) return "✅ **{$name}** — Size **{$askedSize}** vẫn **còn hàng** ({$stock} cái)!\n\n👉 Nhấn vào sản phẩm bên dưới để đặt ngay nhé!";
+
+        if ($stock > 0) {
+            return "**{$name}** — Size **{$askedSize}** vẫn **còn hàng**!\n\n"
+                 . "Tồn kho: **{$stock} cái**\n\n"
+                 . "Nhấn vào sản phẩm bên dưới để đặt ngay nhé!";
+        }
         if ($stock === 0) {
-            $avail = array_keys(array_filter($sizeMap, fn($s) => $s > 0));
-            return "❌ **{$name}** — Size **{$askedSize}** hiện đã **hết hàng**.\n" . ($avail ? "💡 Hiện còn size: **" . implode(', ', $avail) . "**" : "😔 Toàn bộ size đã hết.");
+            $available = array_keys(array_filter($sizeMap, fn($s) => $s > 0));
+            $altText = !empty($available)
+                ? "\n\nHiện vẫn còn size: **" . implode(', ', $available) . "**"
+                : "\n\nToàn bộ size đã hết hàng.";
+
+            return "**{$name}** — Rất tiếc, size **{$askedSize}** hiện đã **hết hàng**."
+                 . $altText . "\n\n"
+                 . "Shop dự kiến **nhập thêm hàng trong 3-7 ngày** tới.\n\n"
+                 . "Bạn để lại **SĐT** hoặc **liên hệ hotline 1900 123 456** để được thông báo khi có hàng nhé!";
         }
-        $avail = array_keys(array_filter($sizeMap, fn($s) => $s > 0));
-        return "⚠️ **{$name}** không có size **{$askedSize}** ạ." . ($avail ? "\n💡 Các size đang có: **" . implode(', ', $avail) . "**" : '');
+
+        $available = array_keys(array_filter($sizeMap, fn($s) => $s > 0));
+        $sizeList = !empty($available) ? implode(', ', $available) : '(chưa có)';
+        return "**{$name}** không có size **{$askedSize}** ạ.\n\n"
+             . "Các size hiện có: **{$sizeList}**";
     }
-    if (!$sizes) return "⚠️ Sản phẩm **{$name}** chưa có thông tin size.";
-    $out = "📦 **{$name}** — Tình trạng:\n";
+
+    if (empty($sizes)) {
+        return "Sản phẩm **{$name}** chưa có thông tin size.\n\n"
+             . "Vui lòng liên hệ hotline **1900 123 456** để được tư vấn ạ!";
+    }
+
+    $out = "**{$name}** — Tình trạng tồn kho:\n\n";
+    $hasStock = false;
     foreach ($sizes as $s) {
-        $out .= ($s['stock'] > 0) ? "✅ Size **{$s['size']}** — còn **{$s['stock']} cái**\n" : "❌ Size **{$s['size']}** — hết hàng\n";
-    }
-    return $out;
-}
-
-function chatbotIsStockQuery(string $n): bool {
-    if (preg_match('/\b(con trai|con gai|cho con|con nit|em be)\b/', $n)) return false;
-    return (bool)preg_match('/\b(con|het)\b.*\b(khong|hang|size|chua|nua|k)\b|\b(het hang|ton kho|co san|available|in stock|con hang)\b/', $n);
-}
-
-function chatbotStandaloneSize(string $n): ?string {
-    if (preg_match('/(?<![a-z0-9])(2xl|xxl|xl|l|m|s)(?![a-z0-9])/', $n, $m)) {
-        $s = strtoupper($m[1]);
-        return $s === 'XXL' ? '2XL' : $s;
-    }
-    return null;
-}
-
-/** Giữ lại để tương thích code cũ */
-function chatbotDetectStockQuery(string $message): ?array {
-    $msg = mb_strtolower(trim($message));
-    if (!preg_match('/(còn|hết|tồn|available)/iu', $msg)) return null;
-    $size = chatbotStandaloneSize(chatbotNormalize($message));
-    $cleaned = preg_replace(['/\b(còn|hết|tồn|không|ko|k|ạ|vậy|thì|cho|mình|hỏi|shop|ơi|và|có|không\?)\b/iu', '/(?:size|cỡ|sz)\s*(2xl|xl|l|m|s)/iu', '/\b(2xl|xl|l|m|s)\b/iu', '/[?.,!;:]/u'], ' ', $msg);
-    $keyword = trim(preg_replace('/\s+/', ' ', $cleaned));
-    if (mb_strlen($keyword) < 3) return null;
-    return ['keyword' => $keyword, 'size' => $size];
-}
-
-/* ---------- Chi tiết / so sánh sản phẩm ---------- */
-function chatbotCleanDescription(?string $html, int $max = 350): string {
-    $t = html_entity_decode(strip_tags((string)$html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-    $t = trim(preg_replace('/\s+/u', ' ', $t));
-    return mb_strlen($t) > $max ? mb_substr($t, 0, $max) . '…' : $t;
-}
-
-function chatbotFormatProductDetail(array $product): string {
-    $name = $product['name'] ?? 'Sản phẩm';
-    $final = chatbotFinalPrice($product);
-    $discount = (int)($product['discount_percent'] ?? 0);
-    $out = "📦 **{$name}**\n\n💰 **Giá:** " . chatbotVnd($final);
-    if ($discount > 0) $out .= " _(giảm {$discount}%, giá gốc " . chatbotVnd($product['price']) . ")_";
-    $out .= "\n";
-
-    $desc = chatbotCleanDescription($product['description'] ?? '', 260);
-    if ($desc !== '') $out .= "\n📝 {$desc}\n";
-
-    $sizes = $product['sizes'] ?? [];
-    if ($sizes) {
-        $out .= "\n📏 **Size & tồn kho:**\n";
-        foreach ($sizes as $s) {
-            $out .= ($s['stock'] > 0) ? "✅ Size **{$s['size']}** — {$s['stock']} cái\n" : "❌ Size **{$s['size']}** — Hết hàng\n";
+        $sz = strtoupper($s['size'] ?? '?');
+        $st = (int)($s['stock'] ?? 0);
+        if ($st > 0) {
+            $out .= "- Size **{$sz}** — còn **{$st} cái**\n";
+            $hasStock = true;
+        } else {
+            $out .= "- Size **{$sz}** — hết hàng\n";
         }
-        $out .= "\n👉 Bạn muốn đặt size nào?";
-    } else {
-        $out .= "\n⚠️ Sản phẩm chưa có thông tin size.";
     }
+    $out .= "\n";
+    $out .= $hasStock
+        ? "Bạn muốn đặt size nào ạ?"
+        : "Sản phẩm hiện đã hết hàng. Shop sẽ nhập thêm trong **3-7 ngày** nhé!";
     return $out;
-}
-
-function chatbotFormatProductAspect(array $p, string $aspect, ?string $size = null): string {
-    $name = $p['name'];
-    switch ($aspect) {
-        case 'price':
-            $d = (int)($p['discount_percent'] ?? 0);
-            $o = "💰 **{$name}** hiện có giá **" . chatbotVnd(chatbotFinalPrice($p)) . "**";
-            if ($d > 0) $o .= " (giảm **{$d}%**, giá gốc " . chatbotVnd($p['price']) . ")";
-            $o .= ((float)chatbotFinalPrice($p) >= CHATBOT_FREESHIP) ? "\n🚚 Đơn này được **miễn phí ship**!" : "\n🚚 Đơn từ " . chatbotVnd(CHATBOT_FREESHIP) . " được miễn phí ship.";
-            return $o;
-        case 'sizes':
-            return chatbotFormatStockResponse(['product' => $p, 'sizes' => $p['sizes'] ?? []], $size);
-        case 'material':
-            $d = chatbotCleanDescription($p['description'] ?? '', 400);
-            return $d !== ''
-                ? "🧵 **{$name}**\n\n{$d}\n\n💡 Cần biết thêm về form/độ dày, bạn cứ hỏi mình nhé!"
-                : "🧵 Mô tả chất liệu của **{$name}** chưa được cập nhật. Bạn gọi **" . CHATBOT_HOTLINE . "** để shop tư vấn kỹ hơn nhé!";
-        case 'color':
-            $d = mb_strtolower(chatbotCleanDescription($p['description'] ?? '', 800));
-            $hits = [];
-            foreach (chatbotColorDictionary() as [, $aw, ]) if (mb_strpos($d . ' ' . mb_strtolower($name), $aw) !== false) $hits[] = $aw;
-            return $hits
-                ? "🎨 **{$name}** có các màu: **" . implode(', ', array_unique($hits)) . "**.\n👉 Xem ảnh & chọn màu ở trang chi tiết nhé!"
-                : "🎨 Bạn xem các tùy chọn màu & hình thực tế ở trang chi tiết của **{$name}** nhé. Cần mình tìm mẫu tương tự màu khác không?";
-        case 'buy':
-            return "🛒 Bạn bấm vào sản phẩm bên dưới → chọn **size** → **Thêm vào giỏ** là xong nhé!\n🚚 Đơn từ " . chatbotVnd(CHATBOT_FREESHIP) . " được miễn phí ship.";
-        default:
-            return chatbotFormatProductDetail($p);
-    }
-}
-
-function chatbotFormatComparison(array $products): string {
-    $cell = fn($s) => str_replace('|', '/', (string)$s);
-    $head = '| |'; $sep = '|---|'; $rows = ['Giá' => '|**Giá**|', 'Giảm giá' => '|**Giảm giá**|', 'Size còn hàng' => '|**Size còn hàng**|'];
-    foreach ($products as $i => $p) {
-        $head .= ' ' . ($i + 1) . '. ' . $cell($p['name']) . ' |'; $sep .= '---|';
-        $avail = [];
-        foreach ($p['sizes'] ?? [] as $s) if ((int)$s['stock'] > 0) $avail[] = $s['size'];
-        $d = (int)($p['discount_percent'] ?? 0);
-        $rows['Giá']           .= chatbotVnd(chatbotFinalPrice($p)) . '|';
-        $rows['Giảm giá']      .= ($d > 0 ? "-{$d}%" : '—') . '|';
-        $rows['Size còn hàng'] .= ($avail ? implode(', ', $avail) : 'Hết hàng') . '|';
-    }
-    return "⚖️ **So sánh nhanh:**\n\n{$head}\n{$sep}\n" . implode("\n", $rows) . "\n\nBạn nghiêng về mẫu nào? Cho mình **chiều cao + cân nặng** để mình chọn size luôn nhé!";
-}
-
-function chatbotLoadContextProducts(PDO $pdo, int $max = 4): array {
-    $out = [];
-    foreach (array_slice(chatbotLoadProductContext(), 0, $max) as $id) {
-        $p = chatbotGetProductById($pdo, (int)$id);
-        if ($p) $out[] = $p;
-    }
-    return $out;
-}
-
-/* ---------- Tham chiếu "sản phẩm số 2", "cái này" ---------- */
-function chatbotDetectProductReference(string $message): ?int {
-    $n = chatbotNormalize($message);
-    $ord = ['nhat' => 0, 'dau tien' => 0, 'dau' => 0, '1' => 0, 'mot' => 0, 'hai' => 1, 'nhi' => 1, '2' => 1, 'ba' => 2, '3' => 2, 'tu' => 3, 'bon' => 3, '4' => 3, 'nam' => 4, '5' => 4];
-    $w = '([0-9]+|nhat|nhi|ba|tu|bon|nam|mot|hai|dau tien)';
-    $patterns = [
-        '/\b(?:san pham|cai|mon|mau|item|sp)\s+(?:thu\s+|so\s+)?' . $w . '\b/',
-        '/^(?:thu|so)\s+' . $w . '\b/',
-        '/\btim hieu\s+(?:ve\s+)?(?:san pham\s+|cai\s+|mon\s+)?(?:thu\s+|so\s+)?' . $w . '\b/',
-        '/\bxem\s+(?:chi tiet\s+)?(?:san pham\s+|cai\s+|mon\s+)?(?:thu\s+|so\s+)?' . $w . '\b/',
-        '/\bve\s+(?:san pham\s+)?(?:so\s+|thu\s+)?([0-9]+)\b/',
-    ];
-    foreach ($patterns as $pt) {
-        if (preg_match($pt, $n, $m) && isset($ord[trim($m[1])])) return $ord[trim($m[1])];
-    }
-    return null;
 }
 
 /* ============================================================
-   🎉 KHUYẾN MÃI
+   SEARCH THEO DỊP / MÙA / PHONG CÁCH
+   ============================================================ */
+function chatbotSearchByOccasion(PDO $pdo, string $occasion, int $limit = 4): array {
+    try {
+        $keywords = [];
+        switch ($occasion) {
+            case 'summer': $keywords = ['thun', 'sơ mi', 'polo', 'cotton', 'thoáng', 'mát', 'short', 'jean']; break;
+            case 'winter': $keywords = ['khoác', 'len', 'dày', 'ấm', 'gió', 'windbreaker', 'hoodie']; break;
+            case 'sport':  $keywords = ['thể thao', 'gym', 'jogger', 'short', 'thoáng', 'co giãn']; break;
+            case 'casual': $keywords = ['thun', 'jean', 'short', 'casual', 'trẻ', 'năng động']; break;
+            case 'office': $keywords = ['sơ mi', 'tây', 'form', 'lịch sự', 'thanh lịch', 'slimfit']; break;
+            default: return [];
+        }
+
+        $whereParts = []; $params = [];
+        foreach ($keywords as $kw) {
+            $whereParts[] = "LOWER(p.name) LIKE ?";
+            $whereParts[] = "LOWER(p.description) LIKE ?";
+            $params[] = '%' . mb_strtolower($kw) . '%';
+            $params[] = '%' . mb_strtolower($kw) . '%';
+        }
+
+        $limit = max(1, min(10, $limit));
+        $whereSql = implode(' OR ', $whereParts);
+
+        $sql = "
+            SELECT p.id, p.name, p.price, p.discount_percent, p.image_url,
+                   p.gender, p.sold_count,
+                   CASE WHEN p.discount_percent > 0
+                        THEN ROUND(p.price * (100 - p.discount_percent) / 100)
+                        ELSE p.price END AS final_price,
+                   (SELECT COALESCE(SUM(stock), 0) FROM product_sizes WHERE product_id = p.id) AS total_stock
+            FROM products p
+            WHERE ($whereSql)
+            ORDER BY p.sold_count DESC, p.id DESC LIMIT $limit
+        ";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($rows as &$r) {
+            $r['gender'] = chatbotDetectGenderFromName($r['name'], $r['gender'] ?? 'unisex');
+        }
+        return $rows;
+    } catch (Exception $e) {
+        error_log('chatbotSearchByOccasion error: ' . $e->getMessage());
+        return [];
+    }
+}
+
+function chatbotGetOccasionMessage(string $occasion): string {
+    $map = [
+        'summer' => "**Đồ mùa hè tại THE ATELIER** — mát mẻ, thoáng khí:",
+        'winter' => "**Đồ mùa đông tại THE ATELIER** — ấm áp, phong cách:",
+        'sport'  => "**Đồ thể thao tại THE ATELIER** — thoải mái, năng động:",
+        'casual' => "**Đồ đi chơi tại THE ATELIER** — trẻ trung, năng động:",
+        'office' => "**Đồ đi làm tại THE ATELIER** — lịch sự, sang trọng:",
+    ];
+    return $map[$occasion] ?? "Đây là những sản phẩm phù hợp:";
+}
+
+/* ============================================================
+   FORMAT SẢN PHẨM
+   ============================================================ */
+function chatbotFormatProductText(array $p): string {
+    $name     = $p['name'] ?? 'Sản phẩm';
+    $price    = (float)($p['price'] ?? 0);
+    $discount = (int)($p['discount_percent'] ?? 0);
+    $gender   = chatbotDetectGenderFromName($name, $p['gender'] ?? 'unisex');
+
+    $finalPrice = $discount > 0 ? round($price * (100 - $discount) / 100) : $price;
+    $line = "- {$name} [" . chatbotGenderLabel($gender) . "] — " . number_format($finalPrice, 0, ',', '.') . "đ";
+
+    if ($discount > 0) $line .= " (giảm {$discount}%)";
+    if (isset($p['total_stock'])) {
+        $stock = (int)$p['total_stock'];
+        $line .= $stock > 0 ? " · còn {$stock} sp" : " · hết hàng";
+    }
+    return $line;
+}
+
+function chatbotFormatProductsText(array $products): string {
+    if (empty($products)) return '(Không có sản phẩm nào)';
+    return implode("\n", array_map('chatbotFormatProductText', $products));
+}
+
+function chatbotFormatSizesText(array $sizes): string {
+    if (empty($sizes)) return '(Chưa có size)';
+    $parts = [];
+    foreach ($sizes as $s) $parts[] = ($s['size'] ?? '?') . ': ' . (int)($s['stock'] ?? 0);
+    return implode(' · ', $parts);
+}
+
+function chatbotFormatProductDetail(array $product): string {
+    $name        = $product['name'] ?? 'Sản phẩm';
+    $price       = (float)($product['price'] ?? 0);
+    $discount    = (int)($product['discount_percent'] ?? 0);
+    $description = trim($product['description'] ?? '');
+    $gender      = chatbotDetectGenderFromName($name, $product['gender'] ?? 'unisex');
+    $category    = $product['category_name'] ?? '';
+
+    $finalPrice = $discount > 0 ? round($price * (100 - $discount) / 100) : $price;
+
+    $out = "**{$name}**\n\n";
+
+    if ($discount > 0) {
+        $out .= "**Giá:** " . number_format($finalPrice, 0, ',', '.') . "đ";
+        $out .= " ~~" . number_format($price, 0, ',', '.') . "đ~~ _(giảm {$discount}%)_\n";
+    } else {
+        $out .= "**Giá:** " . number_format($finalPrice, 0, ',', '.') . "đ\n";
+    }
+
+    $meta = [];
+    if ($category) $meta[] = "Danh mục: **{$category}**";
+    $meta[] = "Giới tính: **" . chatbotGenderLabel($gender) . "**";
+    if (isset($product['sold_count'])) $meta[] = "Đã bán: **" . (int)$product['sold_count'] . "**";
+    $out .= implode(' · ', $meta) . "\n";
+
+    if ($description !== '') {
+        $short = mb_substr($description, 0, 200);
+        if (mb_strlen($description) > 200) $short .= '...';
+        $out .= "\n{$short}\n";
+    }
+
+    $sizes = $product['sizes'] ?? [];
+    if (!empty($sizes)) {
+        $out .= "\n**Size & tồn kho:**\n";
+        $hasStock = false;
+        foreach ($sizes as $s) {
+            $sz = $s['size'] ?? '?';
+            $st = (int)($s['stock'] ?? 0);
+            if ($st > 0) { $out .= "- Size **{$sz}** — còn **{$st} cái**\n"; $hasStock = true; }
+            else         { $out .= "- Size **{$sz}** — Hết hàng\n"; }
+        }
+        $out .= "\n";
+        $out .= $hasStock
+            ? "Bạn muốn đặt size nào? Nhắn mình để được hỗ trợ nhé!"
+            : "Rất tiếc, sản phẩm hiện đang **hết hàng**. Bạn có muốn xem sản phẩm tương tự không?";
+    } else {
+        $out .= "\nSản phẩm chưa có thông tin size. Vui lòng liên hệ hotline **1900 123 456**.";
+    }
+
+    return $out;
+}
+
+/* ============================================================
+   KHUYẾN MÃI
    ============================================================ */
 function chatbotGetActivePromotions(PDO $pdo): array {
     $promotions = [];
-    $today = new DateTime(); $year = (int)date('Y');
+    $today = new DateTime();
+    $currentYear = (int)date('Y');
+
     try {
-        $events = $pdo->query("SELECT * FROM discount_events WHERE is_active = 1")->fetchAll(PDO::FETCH_ASSOC);
+        $events = $pdo->query("SELECT * FROM discount_events WHERE active = 1")->fetchAll(PDO::FETCH_ASSOC);
+
         foreach ($events as $e) {
-            $start = new DateTime(sprintf('%d-%02d-%02d', $year, (int)$e['start_month'], (int)$e['start_day']));
-            $end   = new DateTime(sprintf('%d-%02d-%02d', $year, (int)$e['end_month'], (int)$e['end_day']));
-            if ($end < $start) $end->modify('+1 year');                       // sự kiện vắt qua năm mới
-            if ($today < $start) { $ps = (clone $start)->modify('-1 year'); $pe = (clone $end)->modify('-1 year'); if ($today >= $ps && $today <= $pe) { $start = $ps; $end = $pe; } }
+            $start = new DateTime(sprintf('%d-%02d-%02d', $currentYear, (int)$e['start_month'], (int)$e['start_day']));
+            $end   = new DateTime(sprintf('%d-%02d-%02d', $currentYear, (int)$e['end_month'], (int)$e['end_day']));
+
             if ($end < $today) { $start->modify('+1 year'); $end->modify('+1 year'); }
+            $isActive = ($today >= $start && $today <= $end);
+
             $promotions[] = [
-                'type' => 'event', 'name' => $e['name'], 'discount' => (int)$e['discount_percent'],
-                'gender' => $e['target_gender'] ?? 'all', 'start' => $start->format('d/m'), 'end' => $end->format('d/m'),
-                'is_active' => ($today >= $start && $today <= $end), 'days_until' => max(0, (int)$today->diff($start)->format('%r%a')),
+                'type'      => 'event',
+                'name'      => $e['name'],
+                'discount'  => (int)$e['discount_percent'],
+                'gender'    => $e['target_gender'],
+                'start'     => $start->format('d/m'),
+                'end'       => $end->format('d/m'),
+                'is_active' => $isActive,
             ];
         }
-        $sale = $pdo->query("SELECT COUNT(*) AS total, MAX((base_price - sale_price)/base_price*100) AS max_discount FROM products WHERE sale_price IS NOT NULL")->fetch(PDO::FETCH_ASSOC);
-        if ((int)$sale['total'] > 0) $promotions[] = ['type' => 'products', 'count' => (int)$sale['total'], 'max_discount' => (int)$sale['max_discount']];
 
-        $vStmt = $pdo->query("SELECT code, value AS discount_percent, max_discount AS max_discount_amount, min_order AS min_order_amount FROM vouchers WHERE is_active = 1 AND starts_at <= NOW() AND ends_at >= NOW() LIMIT 5");
-        if ($vStmt) {
-            $v = $vStmt->fetchAll(PDO::FETCH_ASSOC);
-            if ($v) $promotions[] = ['type' => 'vouchers', 'list' => $v];
+        $saleInfo = $pdo->query("
+            SELECT COUNT(*) AS total, MAX(discount_percent) AS max_discount
+            FROM products WHERE discount_percent > 0
+        ")->fetch(PDO::FETCH_ASSOC);
+
+        if ((int)$saleInfo['total'] > 0) {
+            $promotions[] = [
+                'type'         => 'products',
+                'count'        => (int)$saleInfo['total'],
+                'max_discount' => (int)$saleInfo['max_discount'],
+            ];
         }
-    } catch (Exception $e) {}
+
+        $vStmt = $pdo->prepare("
+            SELECT code, discount_percent, max_discount_amount, min_order_amount
+            FROM vouchers
+            WHERE used = 0 AND user_id IS NULL
+              AND valid_from <= CURDATE() AND valid_to >= CURDATE()
+            ORDER BY discount_percent DESC LIMIT 5
+        ");
+        $vStmt->execute();
+        $vouchers = $vStmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!empty($vouchers)) $promotions[] = ['type' => 'vouchers', 'list' => $vouchers];
+    } catch (Exception $e) {
+        error_log('chatbotGetActivePromotions error: ' . $e->getMessage());
+    }
     return $promotions;
 }
 
 function chatbotFormatPromotionResponse(PDO $pdo): string {
     $promotions = chatbotGetActivePromotions($pdo);
-    $out = "🎉 **Khuyến mãi THE ATELIER:**\n\n";
-    $any = false; $upcoming = '';
-    foreach ($promotions as $p) {
-        if ($p['type'] === 'event' && $p['is_active']) { $out .= "🔥 **{$p['name']}** — giảm **{$p['discount']}%** (đến {$p['end']})\n"; $any = true; }
-        elseif ($p['type'] === 'event' && $p['days_until'] <= 60) { $upcoming .= "- **{$p['name']}** — giảm {$p['discount']}% ({$p['start']} → {$p['end']})\n"; }
-        elseif ($p['type'] === 'products') { $out .= "🏷️ **{$p['count']} sản phẩm** đang giảm giá (cao nhất **{$p['max_discount']}%**)\n"; $any = true; }
-        elseif ($p['type'] === 'vouchers') {
-            $out .= "\n🎁 **Mã giảm giá đang chạy:**\n";
-            foreach ($p['list'] as $v) {
-                $line = "- Mã **{$v['code']}** — giảm {$v['discount_percent']}%";
-                if (!empty($v['min_order_amount'])) $line .= ", đơn từ " . chatbotVnd($v['min_order_amount']);
-                $out .= $line . "\n";
-            }
-            $any = true;
-        }
+    if (empty($promotions)) {
+        return "Hiện tại shop chưa có chương trình khuyến mãi nào đang chạy ạ.\n\n"
+             . "Bạn **đăng ký nhận tin** ở footer để nhận thông báo sale sớm nhất nhé!";
     }
-    if ($upcoming !== '') { $out .= "\n⏰ **Sắp diễn ra:**\n{$upcoming}"; $any = true; }
-    if (!$any) $out .= "Hiện shop chưa có chương trình nào đang chạy ạ 😊\n";
-    $out .= "\n📅 **Ưu đãi hằng năm:** 8/3 giảm 30% SP Nữ · 19/11 giảm 30% SP Nam · Voucher sinh nhật giảm 25% 🎂";
+
+    $current = []; $upcoming = []; $productSale = null; $vouchers = [];
+    foreach ($promotions as $p) {
+        if ($p['type'] === 'event') {
+            if ($p['is_active']) $current[]  = $p;
+            else                 $upcoming[] = $p;
+        } elseif ($p['type'] === 'products') $productSale = $p;
+        elseif ($p['type'] === 'vouchers')   $vouchers    = $p['list'];
+    }
+
+    $out = "**Chương trình khuyến mãi THE ATELIER:**\n\n";
+
+    if (!empty($current)) {
+        $out .= "**ĐANG DIỄN RA:**\n";
+        foreach ($current as $p) {
+            $g = ['male' => 'Nam', 'female' => 'Nữ', 'unisex' => 'tất cả'][$p['gender']] ?? 'tất cả';
+            $out .= "- **{$p['name']}** — giảm **{$p['discount']}%** SP **{$g}** (đến hết {$p['end']})\n";
+        }
+        $out .= "\n";
+    }
+
+    if ($productSale) {
+        $out .= "**{$productSale['count']} sản phẩm** đang giảm giá";
+        if ($productSale['max_discount'] > 0) $out .= " (cao nhất **{$productSale['max_discount']}%**)";
+        $out .= "\n\n";
+    }
+
+    if (!empty($vouchers)) {
+        $out .= "**Mã giảm giá:**\n";
+        foreach ($vouchers as $v) {
+            $out .= "- **{$v['code']}** — giảm {$v['discount_percent']}%";
+            if (!empty($v['max_discount_amount'])) {
+                $out .= " (tối đa " . number_format((float)$v['max_discount_amount'], 0, ',', '.') . "đ)";
+            }
+            if (!empty($v['min_order_amount']) && (float)$v['min_order_amount'] > 0) {
+                $out .= " — đơn từ " . number_format((float)$v['min_order_amount'], 0, ',', '.') . "đ";
+            }
+            $out .= "\n";
+        }
+        $out .= "\n";
+    }
+
+    if (!empty($upcoming)) {
+        $out .= "**SẮP TỚI:**\n";
+        foreach ($upcoming as $p) {
+            $g = ['male' => 'Nam', 'female' => 'Nữ', 'unisex' => 'tất cả'][$p['gender']] ?? 'tất cả';
+            $out .= "- **{$p['name']}** ({$p['start']}) — giảm **{$p['discount']}%** SP **{$g}**\n";
+        }
+        $out .= "\n";
+    }
+
+    $out .= "**Mẹo:** Mua **combo** hoặc đơn từ **500.000đ** để được **miễn phí ship** nhé!";
     return $out;
 }
 
 /* ============================================================
-   🌦️ DỊP / MÙA (dữ liệu hóa)
+   FALLBACK — Không hiểu → hotline
    ============================================================ */
-function chatbotOccasions(): array {
-    return [
-        'summer' => ['re' => 'mua he|do he|di he|trong he|nang nong|troi nong|oi buc|mat me|thoang mat',
-                     'kw' => ['thun', 'sơ mi', 'polo', 'cotton', 'thoáng', 'short', 'linen'],
-                     'msg' => "☀️ **Đồ mùa hè** — mát mẻ, thoáng khí 👇", 'tip' => 'Ưu tiên chất liệu cotton/linen, màu sáng để đỡ nóng.'],
-        'winter' => ['re' => 'mua dong|do dong|troi lanh|ret|gio lanh|ao am|giu am',
-                     'kw' => ['khoác', 'len', 'dày', 'ấm', 'gió', 'hoodie'],
-                     'msg' => "❄️ **Đồ mùa đông** — ấm áp, phong cách 👇", 'tip' => 'Mặc nhiều lớp (áo thun + len/hoodie + khoác) vừa ấm vừa dễ cởi bớt.'],
-        'sport'  => ['re' => 'the thao|gym|yoga|chay bo|tap luyen|da bong|tap the duc',
-                     'kw' => ['thể thao', 'gym', 'jogger', 'short', 'thoáng'],
-                     'msg' => "🏃 **Đồ thể thao** — thoải mái, năng động 👇", 'tip' => 'Chọn đồ thoáng, co giãn, thấm hút tốt.'],
-        'casual' => ['re' => 'di choi|dao pho|di cafe|ca phe|cuoi tuan|casual|nang dong|di cho',
-                     'kw' => ['thun', 'jean', 'short', 'casual', 'năng động'],
-                     'msg' => "👕 **Đồ đi chơi** — trẻ trung 👇", 'tip' => 'Áo thun + quần jean/short là combo dễ mặc, khó sai.'],
-        'office' => ['re' => 'di lam|cong so|van phong|phong van|office|lich su|thanh lich',
-                     'kw' => ['sơ mi', 'tây', 'lịch sự', 'thanh lịch'],
-                     'msg' => "👔 **Đồ đi làm** — lịch sự, chỉn chu 👇", 'tip' => 'Sơ mi + quần tây/kaki tông trung tính là công thức an toàn.'],
-        'party'  => ['re' => 'di tiec|du tiec|party|dam cuoi|tiec cuoi|du le|tot nghiep|su kien|gala|sang trong',
-                     'kw' => ['sơ mi', 'tây', 'váy', 'đầm', 'khoác'],
-                     'msg' => "🥂 **Đồ đi tiệc** — sang trọng, nổi bật 👇", 'tip' => 'Chọn form đứng dáng, màu trầm hoặc một điểm nhấn nổi bật.'],
-        'date'   => ['re' => 'hen ho|di date|buoi hen|di choi voi nguoi yeu|ra mat',
-                     'kw' => ['sơ mi', 'polo', 'váy', 'đầm', 'jean'],
-                     'msg' => "💘 **Đồ đi hẹn hò** — gọn gàng, có gu 👇", 'tip' => 'Sạch sẽ, vừa vặn, màu sáng/trung tính luôn ghi điểm.'],
-        'beach'  => ['re' => 'di bien|du lich|nghi mat|nghi duong|picnic|da ngoai|di xa',
-                     'kw' => ['short', 'thun', 'linen', 'váy', 'đầm', 'mũ', 'nón'],
-                     'msg' => "🏖️ **Đồ đi biển/du lịch** — nhẹ, thoáng, dễ phối 👇", 'tip' => 'Mang đồ dễ phối với nhau, ưu tiên chất liệu nhanh khô.'],
-        'school' => ['re' => 'di hoc|sinh vien|hoc sinh|len truong|di thi',
-                     'kw' => ['thun', 'polo', 'jean', 'hoodie', 'balo'],
-                     'msg' => "🎒 **Đồ đi học** — năng động, thoải mái 👇", 'tip' => 'Ưu tiên đồ dễ giặt, bền, mặc cả ngày không bí.'],
-        'tet'    => ['re' => 'tet|nam moi|le hoi|di chua|di le|xuan',
-                     'kw' => ['sơ mi', 'váy', 'đầm', 'len', 'khoác'],
-                     'msg' => "🧧 **Đồ Tết** — tươi tắn, may mắn 👇", 'tip' => 'Tông đỏ, vàng, be hoặc màu sáng sẽ rất hợp không khí Tết.'],
-        'rainy'  => ['re' => 'mua mua|troi mua|ao mua|di mua',
-                     'kw' => ['khoác', 'gió', 'hoodie'],
-                     'msg' => "🌧️ **Đồ ngày mưa** — gọn, nhanh khô 👇", 'tip' => 'Ưu tiên áo khoác nhẹ chống gió, quần nhanh khô.'],
-        'home'   => ['re' => 'o nha|do ngu|mac nha|do bo|pijama|pyjama',
-                     'kw' => ['thun', 'short', 'jogger'],
-                     'msg' => "🏠 **Đồ mặc nhà** — mềm, thoải mái 👇", 'tip' => 'Chọn cotton mềm, form rộng vừa phải cho dễ chịu.'],
-    ];
-}
-
-function chatbotDetectOccasion(string $n): ?string {
-    foreach (chatbotOccasions() as $k => $o) if (preg_match('/\b(?:' . $o['re'] . ')\b/', $n)) return $k;
-    return null;
-}
-
-function chatbotSearchByOccasion(PDO $pdo, string $occasion, int $limit = 4, array $extra = []): array {
-    $occ = chatbotOccasions()[$occasion] ?? null;
-    if (!$occ) return [];
-    $rows = chatbotGetProductsByFilter($pdo, ['any_keywords' => $occ['kw'], 'limit' => $limit, 'in_stock' => true] + $extra);
-    return $rows ?: chatbotGetProductsByFilter($pdo, ['any_keywords' => $occ['kw'], 'limit' => $limit] + $extra);
-}
-
-function chatbotGetOccasionMessage(string $occasion): string {
-    return chatbotOccasions()[$occasion]['msg'] ?? "Gợi ý cho bạn 👇";
+function chatbotGetFallbackMessage(): string {
+    return "Xin lỗi, mình đang không hiểu câu hỏi. Bạn thử lại hoặc gọi hotline 1900 123 456 nhé!\n\n"
+         . "Bạn vui lòng **liên hệ hotline 1900 123 456** (8h - 22h hàng ngày) "
+         . "hoặc **email hello@theatelier.vn** để được nhân viên hỗ trợ chi tiết nhé!\n\n"
+         . "Mình có thể giúp bạn ngay:\n"
+         . "- Tư vấn **size** — cho mình cân nặng + chiều cao\n"
+         . "- **Tìm sản phẩm** — nam/nữ, theo mùa, dịp\n"
+         . "- **Kiểm tra tồn kho** — VD: \"áo thun nam còn M không\"\n"
+         . "- **Khuyến mãi** đang diễn ra\n"
+         . "- **Đổi trả**, **hủy đơn**, **địa chỉ**, **giờ mở cửa**";
 }
 
 /* ============================================================
-   📚 KNOWLEDGE BASE (FAQ) — thêm câu hỏi mới chỉ cần thêm 1 mục
-   ------------------------------------------------------------
-   'kw'     : cụm từ KHÔNG DẤU. Tiền tố "!" = từ khóa mạnh (điểm cao).
-   'answer' : câu trả lời (markdown nhẹ)  |  'handler' : xử lý động
-   'yield'  : true → nhường cho tìm sản phẩm nếu câu có loại SP/màu/giá...
-   'cards'  : true → kèm thẻ SP theo thực thể  |  mảng filter → kèm thẻ SP cố định
+   SYSTEM PROMPT BUILDER
    ============================================================ */
-function chatbotGetKnowledge(): array {
-    $hot = CHATBOT_HOTLINE; $mail = CHATBOT_EMAIL;
-    $free = chatbotVnd(CHATBOT_FREESHIP); $fee = chatbotVnd(CHATBOT_SHIP_FEE); $days = CHATBOT_RETURN_DAYS;
+function chatbotBuildEnhancedSystemPrompt(PDO $pdo): string {
+    $stats       = chatbotGetShopStats($pdo);
+    $categories  = chatbotGetCategories($pdo);
+    $topProducts = chatbotGetProductsByFilter($pdo, ['sort' => 'best_seller', 'limit' => 5]);
+    $onSale      = chatbotGetDiscountedProducts($pdo, 3);
+    $newest      = chatbotGetNewestProducts($pdo, 3);
 
-    return [
-        'complaint' => ['kw' => ['!hang loi', '!giao sai', '!bi rach', '!bung chi', '!thieu hang', '!giao cham', '!khong hai long', '!that vong', '!khieu nai', '!sai mau', '!sai size', '!nhan nham', 'dut chi', 'bi hu', 'te qua', 'giao thieu'],
-            'answer' => "😔 Mình rất tiếc về trải nghiệm này và xin lỗi bạn ạ!\n\n✅ Nếu lỗi từ shop (lỗi hàng, giao sai/thiếu) → **đổi mới hoặc hoàn 100%** trong **{$days} ngày**, sản phẩm còn nguyên tag.\n\n📸 Bạn gửi giúp **mã đơn + hình ảnh sản phẩm** qua:\n- Hotline **{$hot}** (8h - 22h)\n- Email **{$mail}**\n\nShop sẽ xử lý ngay cho bạn ạ 🙏"],
-        'human_agent' => ['kw' => ['!nhan vien', '!tu van vien', '!nguoi that', '!gap nhan vien', '!tong dai', '!quan ly', 'noi chuyen voi nguoi', 'ho tro truc tiep'],
-            'answer' => "👩‍💼 Bạn muốn trao đổi trực tiếp với nhân viên?\n\n📞 Hotline: **{$hot}** (8h - 22h)\n📧 Email: **{$mail}**\n📍 Hoặc ghé showroom (hỏi mình \"địa chỉ shop\").\n\nTrong lúc chờ, mình vẫn hỗ trợ size, sản phẩm, tồn kho được nhé!"],
-        'return' => ['kw' => ['!hoan tra', '!hoan hang', '!hoan tien', '!doi tra', '!doi hang', '!doi size', '!doi mau', '!doi san pham', '!tra hang', '!tra lai', '!chinh sach doi', 'bao hanh', 'doi co'],
-            'answer' => "↩️ **Chính sách đổi trả — THE ATELIER:**\n\n✅ **Điều kiện:** Trong **{$days} ngày**, còn nguyên tag, chưa qua sử dụng.\n- Lỗi từ shop → đổi mới / hoàn **100%**\n- Không vừa size → đổi size **miễn phí lần đầu**\n\nBạn muốn đổi/trả sản phẩm nào ạ?"],
-        'refund_time' => ['kw' => ['!bao lau hoan tien', '!khi nao hoan tien', '!hoan tien bao lau', '!bao lau duoc hoan', 'nhan lai tien'],
-            'answer' => "💸 Thời gian hoàn tiền phụ thuộc **phương thức thanh toán** của đơn hàng. Bạn gọi **{$hot}** hoặc email **{$mail}** kèm **mã đơn** để shop kiểm tra chính xác nhé!"],
-        'cancel_order' => ['kw' => ['!huy don', '!huy order', '!huy dat hang', 'cancel don', 'cancel order', 'khong muon mua nua', 'muon huy'],
-            'answer' => "❌ **Hủy đơn hàng:**\n\n✅ Có thể hủy MIỄN PHÍ khi đơn ở trạng thái **Chờ xử lý**.\n❌ Không thể hủy khi đơn đã **Đang giao** hoặc **Đã giao**.\n\n📌 Vào **Tài khoản** → **Đơn hàng của tôi** để hủy nhé!"],
-        'change_info' => ['kw' => ['!doi dia chi', '!sua dia chi', '!thay doi dia chi', '!nhap sai dia chi', '!nhap nham dia chi', 'doi so dien thoai', 'sua thong tin', 'doi nguoi nhan'],
-            'answer' => "✏️ Muốn đổi **địa chỉ / SĐT nhận hàng**?\n\n- Đơn đang **Chờ xử lý**: bạn gọi ngay hotline **{$hot}** để shop chỉnh giúp (hoặc hủy & đặt lại).\n- Đơn **Đang giao**: liên hệ hotline sớm để shop phối hợp bên vận chuyển.\n\nBạn nhớ cung cấp **mã đơn** nhé!"],
-        'order_tracking' => ['kw' => ['!kiem tra don', '!tra cuu don', '!theo doi don', '!don hang cua toi', '!don cua toi', '!tinh trang don', '!trang thai don', '!ma van don', '!van don', 'don da dat', 'xem don', 'toi dat hang roi'], 'handler' => '__ORDER__'],
-        'ship' => ['kw' => ['!phi ship', '!phi van chuyen', '!phi giao', '!freeship', '!van chuyen', '!giao hang', 'free ship', 'mien phi ship', 'ship bao nhieu', 'bao lau nhan', 'bao lau giao', 'khi nao nhan', 'nhan hang', 'phi giao hang'],
-            'answer' => "🚚 **Chính sách vận chuyển:**\n\n- **Miễn phí ship** đơn từ **{$free}**\n- Đơn dưới mức này: phí **{$fee}** toàn quốc\n- **Thời gian giao:** Nội thành 1-2 ngày, Tỉnh 2-4 ngày."],
-        'international' => ['kw' => ['!ship nuoc ngoai', '!giao quoc te', '!ship quoc te', '!nuoc ngoai', 'ship my', 'ship han'],
-            'answer' => "🌏 Hiện shop giao hàng **toàn quốc**. Với đơn **quốc tế**, bạn vui lòng liên hệ **{$hot}** hoặc **{$mail}** để được báo phương án nhé!"],
-        'payment' => ['kw' => ['!thanh toan', '!phuong thuc', '!cod', '!chuyen khoan', 'the tin dung', 'the ghi no', 'tra tien', 'otp', 'pin'],
-            'answer' => "💳 **Phương thức thanh toán:**\n\n1️⃣ **COD** (xác nhận PIN 6 số)\n2️⃣ **Chuyển khoản** (PIN + OTP)\n3️⃣ **Thẻ tín dụng** (PIN + OTP)\n\n🔒 Bảo mật 2 lớp xác minh qua **PIN** + **OTP email**."],
-        'installment' => ['kw' => ['!tra gop', '!tra sau', '!tra dan', 'tra truoc mot phan'],
-            'answer' => "🏦 Hiện shop hỗ trợ **COD, chuyển khoản, thẻ tín dụng**. Về **trả góp**, bạn liên hệ **{$hot}** để được tư vấn thêm nhé!"],
-        'how_to_order' => ['kw' => ['!cach dat hang', '!dat hang nhu the nao', '!cach mua', '!mua hang nhu the nao', '!huong dan dat', '!dat hang online', 'mua online', 'lam sao dat', 'lam sao mua', 'dat nhu the nao'],
-            'answer' => "🛍️ **Đặt hàng chỉ 4 bước:**\n\n1️⃣ Chọn sản phẩm & **size**\n2️⃣ Nhấn **Thêm vào giỏ**\n3️⃣ Vào **Giỏ hàng** → nhập địa chỉ, áp **mã giảm giá** (nếu có)\n4️⃣ Chọn **thanh toán** & xác nhận bằng **PIN (+ OTP email)**\n\nBạn đang phân vân chọn mẫu hay size? Mình hỗ trợ ngay!"],
-        'voucher_how' => ['kw' => ['!ma giam gia o dau', '!nhap ma', '!cach dung ma', '!ap dung ma', '!ap ma', '!ma het han', '!khong ap duoc ma', 'dung voucher', 'su dung voucher', 'nhap voucher', 'ma khong dung duoc'],
-            'answer' => "🎟️ **Cách dùng mã giảm giá:**\n\n- Nhập mã ở bước **Giỏ hàng / Thanh toán**\n- Mỗi mã có **điều kiện** (đơn tối thiểu, hạn dùng, mức giảm tối đa)\n- Mã báo lỗi? Kiểm tra lại **hạn dùng & giá trị đơn tối thiểu**\n\nHỏi mình \"**đang có chương trình gì**\" để xem mã đang chạy nhé!"],
-        'birthday' => ['kw' => ['!voucher sinh nhat', '!uu dai sinh nhat', '!ma sinh nhat', '!giam sinh nhat'],
-            'answer' => "🎂 **Voucher sinh nhật** giảm **25%** dành cho khách hàng THE ATELIER! Bạn kiểm tra trong **Tài khoản** / email, hoặc gọi **{$hot}** để được hướng dẫn nhận nhé!"],
-        'promotion' => ['kw' => ['!khuyen mai', '!giam gia', '!voucher', '!ma giam', '!uu dai', '!sale', '!coupon', 'dang sale', 'dang giam', 'sap sale', 'khi nao sale', 'co sale khong', 'chuong trinh'],
-            'handler' => '__PROMOTIONS__', 'yield' => true],
-        'price_match' => ['kw' => ['!bot gia', '!tra gia', '!thuong luong', '!giam them', '!mac qua', 'dat qua'],
-            'answer' => "💬 Giá tại THE ATELIER là **giá niêm yết**, mình chưa thể giảm thêm ngoài chương trình ạ. Bạn có thể:\n- Săn **khuyến mãi / voucher** đang chạy\n- Mua đơn từ **{$free}** để **miễn phí ship**\n\nHỏi mình \"**đang có chương trình gì**\" nhé!"],
-        'price_advice' => ['kw' => ['!tiet kiem', '!nen mua gi', '!mua nhieu', 'combo', 'mua set', 'set do'],
-            'answer' => "💰 **Mẹo mua tiết kiệm:**\n- Đơn từ **{$free}** → **Freeship**\n- Săn voucher dịp sale (8/3, 19/11, sinh nhật)\n- Ưu tiên các mẫu đang **giảm giá** (xem bên dưới 👇)", 'cards' => ['on_sale' => true, 'sort' => 'discount'], 'yield' => true],
-        'size_guide' => ['kw' => ['!bang size', '!huong dan chon size', '!chon size', 'size', 'kich thuoc', 'kich co', 'so do', 'co ao'],
-            'answer' => "📏 **Hướng dẫn chọn size THE ATELIER:**\n\n| Cân nặng | Chiều cao | Size |\n|---|---|---|\n| 45-52kg | 1m50-1m58 | **S** |\n| 53-60kg | 1m55-1m65 | **M** |\n| 61-68kg | 1m60-1m72 | **L** |\n| 69-78kg | 1m65-1m78 | **XL** |\n| 79-90kg | 1m70-1m85 | **2XL** |\n\nBạn nhắn **cân nặng + chiều cao** (VD: \"1m65 55kg\"), thêm \"thích mặc **rộng**/**ôm**\" nếu có, mình tư vấn chính xác nhé!", 'yield' => true],
-        'fit' => ['kw' => ['!form', '!co rong khong', '!co chat khong', '!co om khong', '!oversize', '!slim fit', '!regular fit', '!co bi nho', '!co bi to', 'rong hay chat', 'mac co vua', 'co vua khong'],
-            'answer' => "👕 Form dáng có thể khác nhau tùy mẫu. Cách chắc chắn nhất là bạn nhắn **chiều cao + cân nặng** (VD: \"1m70 65kg\"), nói thêm bạn thích mặc **ôm** hay **rộng**, mình sẽ chọn size sát nhất. Nếu mặc không vừa, shop **đổi size miễn phí lần đầu** trong {$days} ngày ạ!", 'cards' => true],
-        'care' => ['kw' => ['!giat', '!bao quan', '!ra mau', '!phai mau', '!xu long', '!bi xu', '!co rut', '!bi co', 'ui', 'phoi', 'say', 'giat may', 'giat tay', 'nhan giat', 'huong dan giat'],
-            'answer' => "🧺 **Mẹo giặt & bảo quản quần áo:**\n\n- Lộn trái áo, giặt **nước lạnh/ấm nhẹ**, vòng giặt nhẹ\n- Giặt riêng đồ **tối màu** với đồ sáng (nhất là 2-3 lần đầu)\n- Tránh **chất tẩy mạnh**, hạn chế vắt/sấy nhiệt cao\n- Phơi **nơi thoáng**, tránh nắng gắt trực tiếp\n- Ủi **nhiệt độ vừa** theo hướng dẫn trên **nhãn mác**\n\n💡 Mỗi sản phẩm có nhãn hướng dẫn riêng — bạn làm theo nhãn là chuẩn nhất ạ!", 'cards' => true],
-        'fabric' => ['kw' => ['!chat lieu', '!vai gi', '!cotton', '!co gian', '!thoang khong', '!mat khong', '!nong khong', '!day khong', '!mong khong', '!polyester', '!linen', '!denim', 'vai'],
-            'answer' => "🧵 Chất liệu mỗi sản phẩm được ghi ở phần **mô tả** trong trang chi tiết. Bạn cho mình biết **tên/loại sản phẩm** (hoặc nói \"**sản phẩm số 1**\") để mình xem chất liệu cụ thể nhé!", 'cards' => true],
-        'color_options' => ['kw' => ['!co mau khac', '!mau nao', '!co nhung mau', '!bang mau', '!con mau', 'mau sac'],
-            'answer' => "🎨 Màu sắc & ảnh thực tế được hiển thị ở **trang chi tiết** từng sản phẩm. Bạn cho mình biết **loại sản phẩm + màu mong muốn** (VD: \"áo thun nam màu đen\") để mình tìm giúp nhé!", 'cards' => true],
-        'invoice' => ['kw' => ['!hoa don', '!xuat hoa don', 'vat', 'hoa don do'],
-            'answer' => "🧾 Để **xuất hóa đơn VAT**, bạn vui lòng liên hệ hotline **{$hot}** hoặc email **{$mail}** kèm **mã đơn + thông tin công ty** nhé!"],
-        'account' => ['kw' => ['!dang ky', '!dang nhap', '!quen mat khau', '!doi mat khau', '!quen pin', '!doi pin', '!tao tai khoan', 'tai khoan', 'dang xuat'],
-            'answer' => "👤 Bạn quản lý tài khoản & đơn hàng ở mục **Tài khoản** trên website. Nếu **quên mật khẩu/PIN** hoặc không đăng nhập được, bạn liên hệ **{$hot}** / **{$mail}** để được hỗ trợ khôi phục nhé!"],
-        'authentic' => ['kw' => ['!hang that', '!chinh hang', '!hang gia', '!hang chat luong', '!nguon goc', 'co uy tin', 'lua dao'],
-            'answer' => "🛡️ THE ATELIER có **showroom thật** và chính sách **đổi trả {$days} ngày**: sản phẩm lỗi/không đúng mô tả được **đổi mới hoặc hoàn 100%**. Bạn có thể ghé showroom xem hàng trực tiếp (hỏi mình \"địa chỉ shop\") 💛"],
-        'gift_wrap' => ['kw' => ['!goi qua', '!hop qua', '!tui qua', '!thiep chuc', 'goi qua tang', 'loi chuc'],
-            'answer' => "🎀 Về **gói quà / thiệp chúc**, bạn vui lòng ghi chú khi đặt hàng hoặc gọi **{$hot}** để shop xác nhận dịch vụ hiện có nhé!"],
-        'restock' => ['kw' => ['!khi nao co hang', '!bao gio ve hang', '!ve hang', '!restock', '!nhap hang', 'hang ve'],
-            'answer' => "📦 Với mẫu đang **hết hàng**, bạn gọi **{$hot}** để shop báo lịch về hàng (nếu có) nhé. Mình cũng có thể gợi ý **mẫu tương tự còn hàng** — bạn cho mình tên/loại sản phẩm nhé!"],
-        'preorder' => ['kw' => ['!dat truoc', '!pre order', '!preorder', '!giu hang'],
-            'answer' => "📌 Về **đặt trước / giữ hàng**, bạn liên hệ **{$hot}** để shop hỗ trợ theo từng sản phẩm nhé!"],
-        'try_on' => ['kw' => ['!mac thu', '!thu do', '!thu truc tiep', '!xem hang truc tiep', '!den shop xem', '!den cua hang'],
-            'answer' => "👗 Bạn ghé **showroom** để mặc thử trực tiếp nhé:\n📍 123 Đường Thời Trang, P. Bến Nghé, Quận 1, TP.HCM\n🕐 T2-T6: 9:00-21:30 · T7: 9:00-22:00 · CN: 9:30-21:00"],
-        'address' => ['kw' => ['!shop o dau', '!cua hang o dau', '!showroom', '!dia chi shop', '!dia chi cua hang', '!dia chi showroom', 'chi duong', 'ban do', 'dia chi'],
-            'answer' => "📍 **Showroom THE ATELIER:**\n123 Đường Thời Trang, Phường Bến Nghé, Quận 1, TP.HCM\n\n🚇 Gần ga Metro Bến Thành.\n📞 Gọi **{$hot}** để được tư vấn nhé!"],
-        'opening_hours' => ['kw' => ['!gio mo cua', '!gio dong cua', '!gio lam viec', 'mo cua luc', 'may gio mo', 'may gio dong', 'bao gio mo', 'co mo cua', 'thu bay co', 'chu nhat co'],
-            'answer' => "🕐 **Giờ mở cửa:**\n- T2 - T6: 9:00 - 21:30\n- T7: 9:00 - 22:00\n- CN: 9:30 - 21:00\n\n💡 Website đặt hàng **24/7**!"],
-        'contact' => ['kw' => ['!hotline', '!so dien thoai', '!lien he', 'email', 'zalo', 'facebook', 'fanpage', 'inbox'],
-            'answer' => "📞 **Liên hệ:**\n- Hotline: **{$hot}** (8h - 22h)\n- Email: **{$mail}**\n\nBạn chat trực tiếp với mình 24/7 nhé! 💬"],
-        'about_shop' => ['kw' => ['!the atelier la gi', '!gioi thieu', '!thuong hieu', '!ve the atelier', 've shop'],
-            'answer' => "✨ **THE ATELIER** là cửa hàng thời trang **Nam · Nữ · Unisex** với showroom tại Quận 1, TP.HCM và website đặt hàng 24/7. Shop có **đổi trả {$days} ngày**, **freeship từ {$free}**.\n\nBạn muốn xem gì trước ạ — đồ nam, đồ nữ hay hàng đang giảm giá?"],
-        'categories' => ['kw' => ['!danh muc', '!loai san pham', '!mat hang', '!shop ban gi', '!shop co nhung gi', '!ban nhung gi', '!co nhung gi'], 'handler' => '__CATEGORIES__'],
-        'kids' => ['kw' => ['!tre em', '!em be', '!thieu nhi', '!cho be', '!con nit', 'do tre con'],
-            'answer' => "👶 Rất tiếc, hiện tại **THE ATELIER chưa có dòng sản phẩm cho trẻ em** ạ 😔\nBạn có thể tham khảo **size nhỏ nhất (S)** hoặc đồ **Unisex** nhé!"],
-        'stock_general' => ['kw' => ['!hang co san', '!co san hang', '!ton kho'],
-            'answer' => "📦 Bạn cho mình **tên/loại sản phẩm + size** để mình kiểm tra tồn kho nhé. VD: \"**áo thun nam còn size M không**\"."],
-        'bot_identity' => ['kw' => ['!ban la ai', '!ban la bot', '!ban la nguoi that', '!chatbot', 'ai tra loi', 'ten ban la gi', 'ten gi'],
-            'answer' => "🤖 Mình là **Atelier Assistant** — trợ lý ảo của THE ATELIER. Mình giúp bạn **tư vấn size, tìm sản phẩm, kiểm tra tồn kho, khuyến mãi, đổi trả**… Cần gặp nhân viên thì gọi **{$hot}** nhé!"],
-        'smalltalk' => ['kw' => ['!khoe khong', '!an com chua', '!buon qua', '!chan qua', 'ban gioi qua', 'ban tuyet voi'],
-            'answer' => "😊 Cảm ơn bạn! Mình luôn sẵn sàng hỗ trợ. Hôm nay bạn muốn tìm đồ cho **dịp nào** (đi làm, đi chơi, đi tiệc...) hay cần mình **tư vấn size** ạ?"],
-    ];
-}
-
-function chatbotMatchKnowledge(string $n, ?array $only = null): ?array {
-    $best = null; $bestScore = 0;
-    foreach (chatbotGetKnowledge() as $id => $item) {
-        if ($only !== null && !in_array($id, $only, true)) continue;
-        $score = 0;
-        foreach ($item['kw'] as $kw) {
-            $w = 1;
-            if ($kw !== '' && $kw[0] === '!') { $w = 3; $kw = substr($kw, 1); }
-            if (preg_match('/(?<![a-z0-9])' . preg_quote($kw, '/') . '(?![a-z0-9])/', $n)) $score += $w + substr_count($kw, ' ');
-        }
-        if ($score > $bestScore) { $bestScore = $score; $best = ['id' => $id, 'item' => $item, 'score' => $score]; }
-    }
-    return $best;
-}
-
-/* ============================================================
-   🛠️ HANDLER TƯ VẤN / TRA ĐƠN
-   ============================================================ */
-function chatbotHandleOrderTracking(PDO $pdo, string $n): string {
-    chatbotSession();
-    $uid = $_SESSION['user_id'] ?? ($_SESSION['user']['id'] ?? null);   // [CHỈNH] key session đăng nhập của bạn
-    if (!$uid) {
-        return "🔐 Để xem tình trạng đơn hàng, bạn vui lòng **đăng nhập** rồi vào **Tài khoản → Đơn hàng của tôi** nhé!\n\nHoặc gọi **" . CHATBOT_HOTLINE . "** (cung cấp **mã đơn + SĐT đặt hàng**) để được hỗ trợ.";
-    }
-    $code = null;
-    if (preg_match('/(?:don(?: hang)?|ma don|order|dh|#)\s*#?\s*(\d{1,10})\b/', $n, $m)) $code = (int)$m[1];
-
-    $label = function ($s) {
-        $s = mb_strtolower((string)$s);
-        $map = ['pending' => '⏳ Chờ xử lý', 'processing' => '📦 Đang chuẩn bị', 'confirmed' => '📦 Đã xác nhận', 'shipping' => '🚚 Đang giao',
-                'delivering' => '🚚 Đang giao', 'delivered' => '✅ Đã giao', 'completed' => '✅ Hoàn tất', 'cancelled' => '❌ Đã hủy', 'canceled' => '❌ Đã hủy'];
-        return $map[$s] ?? ($s !== '' ? $s : 'Không rõ');
-    };
-    try {   // [CHỈNH] giả định bảng orders(id, user_id, status, created_at, total_amount|total)
-        if ($code) { $st = $pdo->prepare("SELECT * FROM orders WHERE id = ? AND user_id = ? LIMIT 1"); $st->execute([$code, $uid]); }
-        else       { $st = $pdo->prepare("SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 3"); $st->execute([$uid]); }
-        $rows = $st->fetchAll(PDO::FETCH_ASSOC);
-        if (!$rows) {
-            return $code ? "🔎 Mình không thấy đơn **#{$code}** trong tài khoản của bạn. Bạn kiểm tra lại mã đơn hoặc vào **Tài khoản → Đơn hàng của tôi** nhé!"
-                         : "📭 Tài khoản của bạn chưa có đơn hàng nào ạ. Bạn cần mình gợi ý sản phẩm không?";
-        }
-        $out = $code ? "📦 **Đơn hàng #{$code}:**\n\n" : "📦 **Đơn hàng gần đây của bạn:**\n\n";
-        foreach ($rows as $r) {
-            $total = $r['total_amount'] ?? ($r['total'] ?? ($r['grand_total'] ?? null));
-            $out .= "- **#{$r['id']}** — " . $label($r['status'] ?? '')
-                  . ($total !== null ? " — " . chatbotVnd($total) : '')
-                  . (!empty($r['created_at']) ? " — " . date('d/m/Y', strtotime($r['created_at'])) : '') . "\n";
-        }
-        return $out . "\n📌 Xem chi tiết hơn ở **Tài khoản → Đơn hàng của tôi**.";
-    } catch (Exception $e) {
-        return "📌 Bạn vào **Tài khoản → Đơn hàng của tôi** để xem tình trạng đơn nhé, hoặc gọi **" . CHATBOT_HOTLINE . "** để được hỗ trợ.";
-    }
-}
-
-function chatbotHandleGift(PDO $pdo, string $raw, string $n, array $e): ?array {
-    if (!preg_match('/\b(qua tang|mua qua|tang qua|chon qua|goi y qua|qua cho|qua sinh nhat|qua valentine|tang (?:ban|vo|chong|me|ba|bo|anh|chi|em|sep|nguoi yeu|dong nghiep|co|thay))\b/', $n)) return null;
-    $r = mb_strtolower($raw);
-    $gender = $e['gender']; $who = '';
-    $female = '/(?<![\p{L}])(bạn gái|vợ|mẹ|má|chị|em gái|bà|cô|bồ|người yêu nữ)(?![\p{L}])/u';
-    $male   = '/(?<![\p{L}])(bạn trai|chồng|ba|bố|cha|anh|em trai|ông|thầy)(?![\p{L}])/u';
-    if (!$gender) {
-        if (preg_match($female, $r, $m)) { $gender = 'female'; $who = $m[1]; }
-        elseif (preg_match($male, $r, $m)) { $gender = 'male'; $who = $m[1]; }
-    }
-    $msg = "🎁 **Gợi ý chọn quà" . ($who ? " tặng {$who}" : '') . ":**\n\n"
-         . "- Chọn **màu trung tính** (đen, trắng, be, xám) — dễ phối, khó sai\n"
-         . "- Ưu tiên món **cơ bản, dễ mặc**: sơ mi, áo thun, áo khoác nhẹ\n"
-         . "- Không chắc size? Chọn size phổ biến — shop **đổi size miễn phí lần đầu** trong " . CHATBOT_RETURN_DAYS . " ngày\n"
-         . "- Cho mình **ngân sách** (VD: \"dưới 500k\") để lọc chuẩn hơn\n\n";
-    $ent = $e; $ent['gender'] = $gender; $ent['types'] = $e['types']; if (!$ent['sort']) $ent['sort'] = 'best_seller';
-    $res = chatbotSmartSearch($pdo, $ent, 4);
-    $products = $res['products'];
-    $msg .= $products ? "Mình gợi ý vài mẫu bên dưới 👇" : "Bạn cho mình biết thêm người nhận thích phong cách nào nhé!";
-    return ['message' => $msg, 'products' => $products, 'intent' => 'gift'];
-}
-
-function chatbotHandleOutfit(PDO $pdo, string $n, array $e): ?array {
-    if (empty($e['types']) || !preg_match('/\b(phoi do|phoi voi|phoi nhu the nao|phoi sao|mix|mac voi|ket hop voi|di voi|hop voi|outfit|mac chung)\b/', $n)) return null;
-    $pair = [
-        'sơ mi' => ['Sơ mi hợp **quần tây/kaki** khi đi làm; **quần jean + sneaker** khi đi chơi.', ['tây', 'jean']],
-        'thun'  => ['Áo thun hợp **quần jean/short**; thêm **áo khoác nhẹ** hoặc sơ mi mặc ngoài cho có layer.', ['jean', 'short']],
-        'polo'  => ['Polo lịch sự khi đi cùng **quần kaki/tây**; năng động hơn với **short/jean**.', ['kaki', 'tây']],
-        'khoác' => ['Áo khoác phối **áo thun trơn + quần jean** là công thức dễ mặc; chọn tông cùng gam cho gọn.', ['thun', 'jean']],
-        'hoodie'=> ['Hoodie hợp **jogger/jean** cho phong cách street, đi cùng sneaker.', ['jogger', 'jean']],
-        'jean'  => ['Jean hợp **áo thun, sơ mi, polo**; đổi áo là đổi phong cách từ năng động đến lịch sự.', ['thun', 'sơ mi']],
-        'tây'   => ['Quần tây hợp **sơ mi/polo** tông trung tính; thêm blazer nếu cần lịch sự.', ['sơ mi', 'polo']],
-        'short' => ['Short hợp **áo thun/polo**, thêm dép hoặc sneaker là đủ cho ngày hè.', ['thun', 'polo']],
-        'kaki'  => ['Kaki hợp **sơ mi/polo/áo thun**, tông be-nâu-xanh navy rất dễ phối.', ['sơ mi', 'polo']],
-        'váy'   => ['Váy hợp **sơ mi/áo thun ôm** + áo khoác mỏng; chọn giày theo dịp (sneaker/sandal/giày cao).', ['sơ mi', 'khoác']],
-        'đầm'   => ['Đầm thêm **áo khoác mỏng** khi đi làm/trời lạnh; phụ kiện tối giản cho thanh lịch.', ['khoác']],
-        'len'   => ['Áo len hợp **jean/quần tây**; mặc sơ mi bên trong để thêm nét lịch sự.', ['jean', 'tây']],
-        'jogger'=> ['Jogger hợp **áo thun/hoodie** + sneaker — thoải mái mà vẫn ra dáng.', ['thun', 'hoodie']],
-    ];
-    foreach ($e['types'] as $t) {
-        if (!isset($pair[$t])) continue;
-        [$tip, $with] = $pair[$t];
-        $f = ['any_keywords' => $with, 'limit' => 4, 'in_stock' => true];
-        if ($e['gender']) $f['gender'] = $e['gender'];
-        $products = chatbotGetProductsByFilter($pdo, $f);
-        return ['message' => "👔 **Gợi ý phối đồ:**\n\n{$tip}\n\n" . ($products ? "Mình gợi ý vài món **dễ phối cùng** bên dưới 👇" : ''), 'products' => $products, 'intent' => 'outfit'];
-    }
-    return null;
-}
-
-function chatbotHandleBodyAdvice(string $n): ?string {
-    if (!preg_match('/\b(mac|chon|phoi|hop|nen|che|giau|do gi)\b/', $n)) return null;
-    $tips = [
-        '/\b(map|day dan|to con|tam than to|hoi day)\b/' => "Chọn đồ **vừa vặn, chất liệu đứng form**, màu trầm hoặc tông đơn sắc; tránh quá rộng (gây khối) hay quá bó. Áo dáng suôn + quần ống đứng rất hợp.",
-        '/\b(gay|nho con|om yeu|manh khanh)\b/' => "Thử **mặc nhiều lớp** (áo thun + sơ mi/khoác mở), họa tiết kẻ ngang hoặc màu sáng giúp dáng đầy đặn hơn; quần ống đứng/straight cân đối tổng thể.",
-        '/\b(thap|lun|nho nguoi|cao [01]m[0-5])\b/' => "Ưu tiên **quần/váy lưng cao**, set đồ **cùng tông** để tạo cảm giác dài chân; chọn áo độ dài vừa phải, tránh quá rộng/quá dài.",
-        '/\b(cao lon|cao qua|cao ong)\b/' => "Bạn có lợi thế dáng! Thử **layer nhiều lớp**, áo dáng dài/oversize, quần ống rộng hoặc kẻ ngang để cân đối.",
-        '/\b(bung|bung to|bung bia)\b/' => "Chọn **áo dáng suôn, chất liệu đứng form**, màu tối ở phần thân; sơ mi/áo khoác mở bên ngoài giúp tổng thể gọn hơn.",
-        '/\b(vai rong|vai to)\b/' => "Chọn **cổ áo thoáng (V/polo)**, áo vừa vai, tránh đệm vai; quần ống đứng giúp cân đối phần trên-dưới.",
-    ];
-    foreach ($tips as $re => $tip) {
-        if (preg_match($re, $n)) return "🧍 **Gợi ý chọn đồ theo dáng:**\n\n{$tip}\n\n📏 Bạn cho mình **chiều cao + cân nặng** (VD: \"1m65 55kg\") để mình chọn **size** chuẩn nhất nhé!";
-    }
-    return null;
-}
-
-/* ============================================================
-   🤖 GROQ AI (có RAG)
-   ============================================================ */
-function chatbotAiAllowed(): bool {
-    chatbotSession();
-    $w = $_SESSION['chat_ai_window'] ?? ['start' => time(), 'count' => 0];
-    if (time() - $w['start'] > 3600) $w = ['start' => time(), 'count' => 0];
-    if ($w['count'] >= CHATBOT_AI_LIMIT_PER_HOUR) { $_SESSION['chat_ai_window'] = $w; return false; }
-    $w['count']++;
-    $_SESSION['chat_ai_window'] = $w;
-    return true;
-}
-
-function chatbotBuildEnhancedSystemPrompt(PDO $pdo, array $ctx = []): string {
-    $stats = chatbotGetShopStats($pdo);
-    $categories = chatbotGetCategories($pdo);
     $catList = '';
     foreach ($categories as $c) $catList .= "- {$c['name']} ({$c['product_count']} sp)\n";
 
-    $prodList = '';
-    foreach (($ctx['products'] ?? []) as $p) {
-        $sizes = [];
-        foreach (chatbotGetProductSizes($pdo, (int)$p['id']) as $s) if ((int)$s['stock'] > 0) $sizes[] = $s['size'];
-        $prodList .= "- {$p['name']} | " . chatbotVnd(chatbotFinalPrice($p))
-                   . ((int)($p['discount_percent'] ?? 0) > 0 ? " (giảm {$p['discount_percent']}%)" : '')
-                   . " | size còn: " . ($sizes ? implode(',', $sizes) : 'hết hàng') . "\n";
-    }
-    $measure = '';
-    if (!empty($_SESSION['chat_measure'])) {
-        $m = $_SESSION['chat_measure'];
-        $measure = "\n## Khách đã cho số đo: cao {$m['height']}cm, nặng {$m['weight']}kg → size gợi ý {$m['size']}.";
+    $priceRange = '';
+    if (!empty($stats['price_min'])) {
+        $priceRange = "Giá: từ " . number_format($stats['price_min'], 0, ',', '.') . "đ đến "
+                    . number_format($stats['price_max'], 0, ',', '.') . "đ";
     }
 
-    return "Bạn là \"Atelier Assistant\" — nhân viên tư vấn thời trang của THE ATELIER (cửa hàng Nam/Nữ/Unisex).
-## Phong cách: thân thiện, ngắn gọn (tối đa ~120 từ), xưng \"mình\" gọi \"bạn\", emoji nhẹ, trả lời bằng tiếng Việt, markdown đơn giản (**đậm**, gạch đầu dòng).
-## Chính sách (CHỈ dùng đúng các thông tin này):
-- Miễn phí ship đơn từ " . chatbotVnd(CHATBOT_FREESHIP) . "; dưới đó phí " . chatbotVnd(CHATBOT_SHIP_FEE) . ". Giao nội thành 1-2 ngày, tỉnh 2-4 ngày.
-- Đổi trả " . CHATBOT_RETURN_DAYS . " ngày, còn tag, chưa qua sử dụng; lỗi từ shop đổi mới/hoàn 100%; đổi size miễn phí lần đầu.
-- Thanh toán: COD (PIN), chuyển khoản/thẻ (PIN + OTP email).
-- Hotline " . CHATBOT_HOTLINE . " (8h-22h), email " . CHATBOT_EMAIL . ". Showroom: 123 Đường Thời Trang, P. Bến Nghé, Q.1, TP.HCM.
-- Bảng size: S 45-52kg, M 53-60kg, L 61-68kg, XL 69-78kg, 2XL 79-90kg.
-## Cửa hàng: {$stats['total_products']} sản phẩm, {$stats['products_on_sale']} đang giảm giá.
-## Danh mục:\n{$catList}
-## Sản phẩm liên quan tới câu hỏi (dữ liệu thật):\n" . ($prodList ?: "(không có)\n") . $measure . "
-## QUY TẮC BẮT BUỘC:
-- Chỉ nêu giá/tồn kho/chất liệu có trong dữ liệu trên. KHÔNG bịa tên sản phẩm, giá, mã giảm giá, chính sách.
-- Không biết hoặc ngoài phạm vi (tình trạng đơn cụ thể, hóa đơn, khiếu nại...) → nói thật và hướng dẫn gọi hotline.
-- Không hứa giảm giá ngoài chương trình. Không bàn chuyện ngoài thời trang/mua sắm; nhẹ nhàng đưa về chủ đề shop.
-- Câu hỏi mơ hồ → hỏi lại 1 câu ngắn để làm rõ.";
+    return "Bạn là \"Atelier Assistant\" — nhân viên tư vấn của THE ATELIER.
+
+## Phong cách
+- Thân thiện, ngắn gọn (tối đa 150 từ)
+- Xưng \"mình\" — gọi khách là \"bạn\"
+- Dùng **bold** cho từ khóa
+- Không biết → đề nghị liên hệ hotline 1900 123 456
+
+## Thông tin shop
+- Bán quần áo nam/nữ phong cách lookbook
+- Tổng: {$stats['total_products']} sản phẩm, {$stats['products_in_stock']} còn hàng
+- Đang giảm giá: {$stats['products_on_sale']} sản phẩm
+- $priceRange
+- Size: S, M, L, XL, 2XL
+- **Miễn phí ship** đơn từ 500.000đ
+- **Đổi trả 30 ngày**
+- Thanh toán: COD / CK / Thẻ (PIN + OTP)
+- Sự kiện: 8/3 (nữ 30%), 19/11 (nam 30%), 20/11 (nữ 30%)
+
+## Danh mục
+$catList
+## TOP 5 bán chạy
+" . chatbotFormatProductsText($topProducts) . "
+
+## Đang giảm giá
+" . chatbotFormatProductsText($onSale) . "
+
+## Hàng mới về
+" . chatbotFormatProductsText($newest) . "
+
+## KHÔNG
+- Không bịa giá, tồn kho
+- Không hứa giảm giá ngoài chương trình
+- Không tiết lộ thông tin nội bộ";
 }
 
-function chatbotCallGroq(string $userMessage, array $history, string $systemPrompt): ?string {
-    if (!defined('GROQ_API_KEY') || empty(GROQ_API_KEY)) return null;
-
-    $messages = [['role' => 'system', 'content' => $systemPrompt]];
-    foreach ($history as $h) {
-        if (!empty($h['role']) && !empty($h['content'])) $messages[] = ['role' => $h['role'], 'content' => $h['content']];
+/* ============================================================
+   OPENAI
+   ============================================================ */
+function chatbotCallOpenAI(string $userMessage, array $history, string $systemPrompt, array $options = []): ?string {
+    if (!defined('OPENAI_API_KEY') || empty(OPENAI_API_KEY) || strpos(OPENAI_API_KEY, 'sk-') !== 0) {
+        return null;
     }
-    $messages[] = ['role' => 'user', 'content' => $userMessage];
 
-    $payload = json_encode([
-        'model'       => defined('GROQ_MODEL') ? GROQ_MODEL : 'llama-3.3-70b-versatile',
-        'messages'    => $messages,
-        'temperature' => 0.4,
-        'max_tokens'  => 450,
-    ], JSON_UNESCAPED_UNICODE);
+    $complexity   = $options['complexity'] ?? 'simple';
+    $useReasoning = ($complexity === 'complex');
 
-    $endpoint = defined('GROQ_ENDPOINT') ? GROQ_ENDPOINT : 'https://api.groq.com/openai/v1/chat/completions';
-    for ($try = 0; $try < 2; $try++) {
-        $ch = curl_init($endpoint);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true, CURLOPT_POSTFIELDS => $payload,
-            CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Authorization: Bearer ' . GROQ_API_KEY],
-            CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 20, CURLOPT_SSL_VERIFYPEER => true,
-        ]);
-        $response = curl_exec($ch);
-        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-        if ($code === 200 && $response) {
-            $data = json_decode($response, true);
-            $txt = $data['choices'][0]['message']['content'] ?? null;
-            return $txt !== null ? trim(strip_tags($txt)) : null;
+    if ($useReasoning) {
+        /* o3-mini — model có reasoning nội bộ */
+        $model           = 'o3-mini';
+        $reasoningEffort = 'medium';
+        $maxTokens       = 2000;
+        $timeout         = 90;
+        $connectTimeout  = 15;
+
+        $messages = [];
+        foreach ($history as $h) {
+            if (!empty($h['role']) && !empty($h['content'])) {
+                $messages[] = ['role' => $h['role'], 'content' => $h['content']];
+            }
         }
-        if ($code !== 429 && $code < 500) break;
-        usleep(400000);
+        $messages[] = [
+            'role'    => 'user',
+            'content' => $systemPrompt
+                       . "\n\n---\n\n**Câu hỏi của khách:**\n" . $userMessage
+                       . "\n\n**Yêu cầu:** Suy nghĩ kỹ trước khi trả lời. Phân tích từng ý nhỏ, "
+                       . "đối chiếu thông tin shop, đưa ra câu trả lời mạch lạc, có cấu trúc rõ ràng.",
+        ];
+
+        $payload = [
+            'model'                 => $model,
+            'messages'              => $messages,
+            'max_completion_tokens' => $maxTokens,
+            'reasoning_effort'      => $reasoningEffort,
+        ];
+    } else {
+        /* gpt-4o-mini — xử lý nhanh */
+        $temperature    = ($complexity === 'medium') ? 0.5 : 0.7;
+        $maxTokens      = ($complexity === 'medium') ? 600 : 400;
+        $timeout        = 30;
+        $connectTimeout = 10;
+
+        $sysPrompt = $systemPrompt;
+        if ($complexity === 'medium') {
+            $sysPrompt .= "\n\n**Lưu ý:** Câu hỏi có thể chứa nhiều ý. Hãy trả lời đầy đủ từng ý, "
+                        . "có thể dùng bullet list để rõ ràng. Suy nghĩ từng bước trước khi kết luận.";
+        }
+
+        $messages = [['role' => 'system', 'content' => $sysPrompt]];
+        foreach ($history as $h) {
+            if (!empty($h['role']) && !empty($h['content'])) {
+                $messages[] = ['role' => $h['role'], 'content' => $h['content']];
+            }
+        }
+        $messages[] = ['role' => 'user', 'content' => $userMessage];
+
+        $payload = [
+            'model'       => 'gpt-4o-mini',
+            'messages'    => $messages,
+            'temperature' => $temperature,
+            'max_tokens'  => $maxTokens,
+        ];
     }
-    return null;
-}
 
-function chatbotLogUnanswered(string $message): void {
-    $dir = __DIR__ . '/logs';
-    if (!is_dir($dir) || !is_writable($dir)) return;
-    @file_put_contents($dir . '/chatbot_unanswered.log', date('c') . "\t" . str_replace(["\r", "\n", "\t"], ' ', $message) . "\n", FILE_APPEND | LOCK_EX);
+    $ch = curl_init('https://api.openai.com/v1/chat/completions');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/json',
+            'Authorization: Bearer ' . OPENAI_API_KEY,
+        ],
+        CURLOPT_TIMEOUT        => $timeout,
+        CURLOPT_CONNECTTIMEOUT => $connectTimeout,
+        CURLOPT_SSL_VERIFYPEER => true,
+    ]);
+
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr  = curl_error($ch);
+    curl_close($ch);
+
+    if ($curlErr) {
+        error_log('[chatbot] curl error: ' . $curlErr);
+        return null;
+    }
+    if ($httpCode !== 200 || !$response) {
+        error_log('[chatbot] HTTP ' . $httpCode . ' — ' . substr((string)$response, 0, 300));
+        /* Nếu o3-mini lỗi (chưa bật billing / chưa có quyền) → fallback */
+        if ($useReasoning) {
+            error_log('[chatbot] o3-mini failed → fallback to gpt-4o-mini');
+            return chatbotCallOpenAI($userMessage, $history, $systemPrompt, ['complexity' => 'medium']);
+        }
+        return null;
+    }
+
+    $data = json_decode($response, true);
+    return $data['choices'][0]['message']['content'] ?? null;
 }
 
 /* ============================================================
-   💡 GỢI Ý NHANH (nút bấm cho giao diện)
+   SEARCH PRODUCTS
    ============================================================ */
-function chatbotSuggestions(array $result): array {
-    $intent = $result['intent'] ?? '';
-    $np = count($result['products'] ?? []);
-    if ($intent === 'size')   return ['Còn size này không?', 'Đang có khuyến mãi gì', 'Chính sách đổi trả'];
-    if ($np > 1)              return ['Sản phẩm số 1', 'So sánh các mẫu này', 'Cái nào rẻ nhất?', 'Còn size M không?'];
-    if ($np === 1)            return ['Giá bao nhiêu?', 'Còn size nào?', 'Chất liệu thế nào?', 'Phối đồ với món này'];
-    if ($intent === 'greeting' || $intent === 'unknown') return ['📏 Tư vấn size', '🎉 Đang có khuyến mãi gì', '👕 Áo thun nam', '🎁 Gợi ý quà tặng'];
-    return ['📏 Tư vấn size', '🛍️ Xem hàng mới', '↩️ Chính sách đổi trả'];
-}
-
-/* ============================================================
-   🎯 MAIN ENTRY
-   ============================================================ */
-function chatbotReply(PDO $pdo, string $message): array {
-    chatbotSession();
-    $message = trim(preg_replace('/\s+/u', ' ', strip_tags($message)));
-    if (mb_strlen($message) > 500) $message = mb_substr($message, 0, 500);
+function chatbotSearchProducts(PDO $pdo, string $keyword, int $limit = 4): array {
+    $keyword = mb_strtolower(trim($keyword));
 
     try {
-        $result = chatbotReplyCore($pdo, $message);
-    } catch (Throwable $ex) {
-        error_log('[chatbot] ' . $ex->getMessage());
-        $result = ['message' => "Xin lỗi, hệ thống đang bận một chút 😅 Bạn thử lại hoặc gọi hotline **" . CHATBOT_HOTLINE . "** nhé!", 'products' => [], 'source' => 'error', 'intent' => 'error'];
+        if ($keyword === 'all' || $keyword === '') {
+            $stmt = $pdo->prepare("
+                SELECT id, name, price, discount_percent, image_url, gender, sold_count
+                FROM products ORDER BY sold_count DESC, id DESC LIMIT ?
+            ");
+            $stmt->bindValue(1, $limit, PDO::PARAM_INT);
+            $stmt->execute();
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } elseif ($keyword === 'nam' || $keyword === 'men') {
+            $stmt = $pdo->prepare("
+                SELECT id, name, price, discount_percent, image_url, gender
+                FROM products
+                WHERE (gender = 'male' OR (gender = 'unisex'
+                    AND (LOWER(name) LIKE '%nam%' OR LOWER(name) LIKE '%men%')
+                    AND LOWER(name) NOT LIKE '%nữ%' AND LOWER(name) NOT LIKE '%nu %'))
+                ORDER BY sold_count DESC, id DESC LIMIT ?
+            ");
+            $stmt->bindValue(1, $limit, PDO::PARAM_INT);
+            $stmt->execute();
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } elseif (in_array($keyword, ['nữ', 'nu', 'women'], true)) {
+            $stmt = $pdo->prepare("
+                SELECT id, name, price, discount_percent, image_url, gender
+                FROM products
+                WHERE (gender = 'female' OR (gender = 'unisex'
+                    AND (LOWER(name) LIKE '%nữ%' OR LOWER(name) LIKE '%nu %'
+                        OR LOWER(name) LIKE '%váy%' OR LOWER(name) LIKE '%đầm%')))
+                ORDER BY sold_count DESC, id DESC LIMIT ?
+            ");
+            $stmt->bindValue(1, $limit, PDO::PARAM_INT);
+            $stmt->execute();
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        } else {
+            $like = '%' . $keyword . '%';
+            $stmt = $pdo->prepare("
+                SELECT id, name, price, discount_percent, image_url, gender
+                FROM products
+                WHERE LOWER(name) LIKE ? OR LOWER(description) LIKE ?
+                ORDER BY sold_count DESC LIMIT ?
+            ");
+            $stmt->bindValue(1, $like);
+            $stmt->bindValue(2, $like);
+            $stmt->bindValue(3, $limit, PDO::PARAM_INT);
+            $stmt->execute();
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+
+        foreach ($rows as &$r) {
+            $r['gender'] = chatbotDetectGenderFromName($r['name'], $r['gender'] ?? 'unisex');
+        }
+        return $rows;
+    } catch (Exception $e) {
+        error_log('chatbotSearchProducts error: ' . $e->getMessage());
+        return [];
     }
-    if (empty($result['suggestions'])) $result['suggestions'] = chatbotSuggestions($result);
-    if ($message !== '') chatbotRemember($message, $result['message']);
-    return $result;
 }
 
-function chatbotReplyCore(PDO $pdo, string $message): array {
-    $result = ['message' => '', 'products' => [], 'source' => 'rule', 'intent' => 'unknown'];
-    $raw = $message;
-    $n = chatbotNormalize($message);
-    if ($n === '') { $result['message'] = "Bạn nhắn nội dung để mình hỗ trợ nhé 😊"; return $result; }
-    $e = chatbotExtractEntities($raw, $n);
-    $words = chatbotWordCount($n);
-    $hasEntities = chatbotHasProductEntities($e);
+/* ============================================================
+   MAIN ENTRY — Trả lời tin nhắn
+   ============================================================ */
+   /* ============================================================
+   ĐÁNH GIÁ ĐỘ PHỨC TẠP CÂU HỎI
+   ============================================================ */
+function chatbotDetectComplexity(string $message): array {
+    $message = trim($message);
+    $len = mb_strlen($message);
+    $questionCount = substr_count($message, '?') + substr_count($message, '？');
 
-    $setProducts = function (array $rows) use (&$result) {
-        $result['products'] = chatbotMapProductsToCards($rows);
-        chatbotSaveProductContext($result['products']);
-    };
+    $connectorCount = preg_match_all(
+        '/(và|hoặc|nhưng|thì|với|cùng|so\s+sánh|khác\s+nhau|ngoài\s+ra|bên\s+cạnh)/iu',
+        $message
+    );
 
-    /* 0. Câu trả lời "có/ok" cho câu hỏi trước đó */
-    $pending = chatbotGetPending();
-    if ($pending && preg_match('/^(co|co a|co nhe|ok|oke|vang|vang a|u|uh|ua|duoc|duoc a|yes|dong y|goi y di|xem di|cho xem|cho minh xem|xem thu)$/', $n)) {
-        chatbotClearPending();
-        if ($pending['type'] === 'size_products') {
-            $size = $pending['data']['size'];
-            $rows = chatbotGetProductsByFilter($pdo, ['size' => $size, 'limit' => 4, 'sort' => 'newest']);
-            if ($rows) { $setProducts($rows); $result['message'] = "Đây là các mẫu **size {$size}** đang còn hàng 👇"; $result['intent'] = 'products'; return $result; }
-            $result['message'] = "Tiếc quá, hiện chưa có mẫu nào còn **size {$size}** ạ 😔 Bạn thử size lân cận nhé!";
+    $needsAnalysis = (bool)preg_match(
+        '/(so\s+sánh|khác\s+nhau|tại\s+sao|vì\s+sao|nên\s+chọn|cách\s+chọn|phân\s+tích|'
+        . 'lợi\s+ích|ưu\s+nhược|phù\s+hợp\s+với|tư\s+vấn\s+chi\s+tiết|'
+        . 'kết\s+hợp|gợi\s+ý\s+outfit|set\s+đồ|mix\s+match)/iu',
+        $message
+    );
+
+    $score = 0;
+    if ($len > 80)              $score += 1;
+    if ($len > 200)             $score += 2;
+    if ($questionCount >= 2)    $score += 1;
+    if ($questionCount >= 3)    $score += 1;
+    if ($connectorCount >= 2)   $score += 1;
+    if ($needsAnalysis)         $score += 2;
+
+    $level = 'simple';
+    if ($score >= 5)        $level = 'complex';
+    elseif ($score >= 2)    $level = 'medium';
+
+    return [
+        'level'          => $level,
+        'score'          => $score,
+        'length'         => $len,
+        'questions'      => $questionCount,
+        'connectors'     => $connectorCount,
+        'needs_analysis' => $needsAnalysis,
+    ];
+}
+function chatbotReply(PDO $pdo, string $message): array {
+    $message = trim($message);
+    $result = ['message' => '', 'products' => [], 'source' => 'rule'];
+
+    /* ---- 1. Rule match ---- */
+    $rule = chatbotMatchRule($message);
+    if ($rule) {
+        // Marker: Tính size
+        if ($rule['response'] === '__COMPUTE_SIZE__') {
+            $measure = chatbotParseMeasurements($message);
+            if ($measure) {
+                $calc = chatbotComputeSize($measure['height'], $measure['weight']);
+                $result['message'] = chatbotFormatSizeResponse($calc);
+                $result['source']  = 'rule_size';
+                $products = chatbotGetProductsByFilter($pdo, ['limit' => 3, 'sort' => 'best_seller']);
+                if (!empty($products)) $result['products'] = $products;
+                return $result;
+            }
+        }
+
+        // Marker: Show SP theo giới tính
+        if ($rule['response'] === '__SHOW_MALE_PRODUCTS__') {
+            $products = chatbotGetProductsByFilter($pdo, ['gender' => 'male', 'limit' => 4, 'sort' => 'best_seller']);
+            $result['products'] = $products;
+            $result['message']  = "Đây là những sản phẩm **dành cho Nam** tại THE ATELIER.\n\nBạn xem thử nhé!";
+            $result['source']   = 'rule_gender';
             return $result;
         }
-    } elseif ($pending) {
-        chatbotClearPending();
-    }
-
-    /* 1. Xã giao ngắn */
-    if ($words <= 4 && preg_match('/^(xin chao|chao|hi|hello|hey|helo|hii+|alo|good morning)\b/', $n)) {
-        $result['intent'] = 'greeting';
-        $result['message'] = "Chào bạn! 👋 Mình là **Atelier Assistant**.\n\nMình giúp được bạn:\n- 📏 Tư vấn **size** — cho mình chiều cao + cân nặng (VD: \"1m65 55kg\")\n- 🛍️ **Tìm sản phẩm** theo loại, màu, giá, dịp (VD: \"áo sơ mi nam dưới 500k\")\n- 📦 **Kiểm tra tồn kho** — VD: \"áo thun nam còn M không\"\n- 🎁 **Gợi ý quà tặng**, **phối đồ**\n- 🎉 **Khuyến mãi**, 🚚 **ship**, ↩️ **đổi trả**, 📦 **đơn hàng**\n\nBạn cần gì ạ?";
-        return $result;
-    }
-    if ($words <= 6 && !$hasEntities && preg_match('/\b(cam on|ok|duoc roi|tuyet voi|hay qua|tot qua|da hieu)\b/', $n) && !preg_match('/\b(khong|bao nhieu|nao)\b/', $n)) {
-        $result['intent'] = 'thanks';
-        $result['message'] = "Dạ không có gì ạ! 😊 Cần gì thêm bạn cứ nhắn mình nhé. Chúc bạn mua sắm vui vẻ! 🛍️";
-        return $result;
-    }
-    if ($words <= 6 && preg_match('/\b(tam biet|bye|goodbye|hen gap lai|thoi nhe)\b/', $n)) {
-        $result['intent'] = 'goodbye';
-        $result['message'] = "Tạm biệt bạn! 👋 Hẹn gặp lại tại **THE ATELIER** nhé! 💛";
-        return $result;
-    }
-
-    /* 2. Tư vấn size theo số đo (kể cả khi khách gửi từng phần) */
-    $hw = chatbotExtractHW($raw);
-    $looksMeasure = ($hw['h'] && $hw['w']) && !preg_match('/\b(con|het|ton kho)\b/', $n)
-        && (preg_match('/(kg|ky|cm|cao|nang|\d\s*m\s*\d|^\s*\d{2,3}\s+\d{2,3}\s*$)/u', mb_strtolower($raw)) || $words <= 3);
-    if ($looksMeasure) {
-        $fit = chatbotParseFitPreference($n);
-        $calc = chatbotComputeSize($hw['h'], $hw['w'], $fit);
-        chatbotSession();
-        $_SESSION['chat_measure'] = ['height' => $calc['height'], 'weight' => $calc['weight'], 'size' => $calc['size']];
-        unset($_SESSION['chat_measure_partial']);
-        $f = ['size' => $calc['size'], 'limit' => 3, 'sort' => 'newest'] + ($e['gender'] ? ['gender' => $e['gender']] : []);
-        $rows = chatbotGetProductsByFilter($pdo, $f);
-        $result['intent'] = 'size'; $result['source'] = 'rule_size';
-        $result['message'] = chatbotFormatSizeResponse($calc, empty($rows));
-        if ($rows) $setProducts($rows); else chatbotSetPending('size_products', ['size' => $calc['size']]);
-        return $result;
-    }
-    $strict = chatbotExtractHW($raw, true);
-    if ($words <= 6 && !$hasEntities && ($strict['h'] || $strict['w']) && !($strict['h'] && $strict['w'])) {
-        $part = $_SESSION['chat_measure_partial'] ?? [];
-        if (!empty($part) && time() - ($part['at'] ?? 0) < 600) { $strict['h'] = $strict['h'] ?: ($part['h'] ?? null); $strict['w'] = $strict['w'] ?: ($part['w'] ?? null); }
-        if ($strict['h'] && $strict['w']) {
-            $calc = chatbotComputeSize($strict['h'], $strict['w'], chatbotParseFitPreference($n));
-            $_SESSION['chat_measure'] = ['height' => $calc['height'], 'weight' => $calc['weight'], 'size' => $calc['size']];
-            unset($_SESSION['chat_measure_partial']);
-            $rows = chatbotGetProductsByFilter($pdo, ['size' => $calc['size'], 'limit' => 3, 'sort' => 'newest']);
-            $result['intent'] = 'size'; $result['source'] = 'rule_size';
-            $result['message'] = chatbotFormatSizeResponse($calc, empty($rows));
-            if ($rows) $setProducts($rows);
+        if ($rule['response'] === '__SHOW_FEMALE_PRODUCTS__') {
+            $products = chatbotGetProductsByFilter($pdo, ['gender' => 'female', 'limit' => 4, 'sort' => 'best_seller']);
+            $result['products'] = $products;
+            $result['message']  = "Đây là những sản phẩm **dành cho Nữ** tại THE ATELIER.\n\nBạn xem thử nhé!";
+            $result['source']   = 'rule_gender';
             return $result;
         }
-        $_SESSION['chat_measure_partial'] = ['h' => $strict['h'], 'w' => $strict['w'], 'at' => time()];
-        $result['intent'] = 'size';
-        $result['message'] = $strict['w'] ? "Mình ghi nhận cân nặng **{$strict['w']}kg** ✅ Bạn cho mình thêm **chiều cao** (VD: 1m65) để tư vấn size nhé!"
-                                          : "Mình ghi nhận chiều cao **{$strict['h']}cm** ✅ Bạn cho mình thêm **cân nặng** (VD: 55kg) để tư vấn size nhé!";
-        return $result;
-    }
 
-    /* 3. Khiếu nại / gặp nhân viên (ưu tiên cao) */
-    $urgent = chatbotMatchKnowledge($n, ['complaint', 'human_agent']);
-    if ($urgent && $urgent['score'] >= 3) { $result['intent'] = $urgent['id']; $result['message'] = $urgent['item']['answer']; return $result; }
-
-    /* 4. Tra cứu đơn hàng */
-    if (preg_match('/\b(?:don(?: hang)?|ma don|order|dh)\s*#?\s*\d{1,10}\b/', $n) || (($k = chatbotMatchKnowledge($n, ['order_tracking'])) && $k['score'] >= 3)) {
-        $result['intent'] = 'order'; $result['message'] = chatbotHandleOrderTracking($pdo, $n); return $result;
-    }
-
-    /* 5. Kiểm tra tồn kho */
-    if (chatbotIsStockQuery($n)) {
-        $size = $e['size'] ?? chatbotStandaloneSize($n);
-        if (!empty($e['types']) || $e['color']) {                       // cấp danh mục: "áo thun nam còn M không"
-            $ent = $e; $ent['size'] = $size; $ent['sort'] = $e['sort'] ?: 'newest';
-            $rows = chatbotGetProductsByFilter($pdo, chatbotEntitiesToFilter($ent) + ['limit' => 4]);
-            if ($rows) {
-                $setProducts($rows);
-                $result['intent'] = 'stock';
-                $result['message'] = $size ? "✅ Còn **size {$size}** ở **" . count($rows) . " mẫu** (" . chatbotDescribeCriteria($e) . ") 👇" : "📦 Các mẫu đang **còn hàng** (" . chatbotDescribeCriteria($e) . ") 👇";
-                return $result;
+        // Marker: Show SP theo mùa/dịp
+        $occasionMarkers = [
+            '__SHOW_SUMMER_PRODUCTS__' => 'summer',
+            '__SHOW_WINTER_PRODUCTS__' => 'winter',
+            '__SHOW_SPORT_PRODUCTS__'  => 'sport',
+            '__SHOW_CASUAL_PRODUCTS__' => 'casual',
+            '__SHOW_OFFICE_PRODUCTS__' => 'office',
+        ];
+        if (isset($occasionMarkers[$rule['response']])) {
+            $occasion = $occasionMarkers[$rule['response']];
+            $products = chatbotSearchByOccasion($pdo, $occasion, 4);
+            if (!empty($products)) {
+                $result['products'] = $products;
+                $result['message']  = chatbotGetOccasionMessage($occasion);
+            } else {
+                $result['message'] = "Mình chưa tìm thấy sản phẩm phù hợp cho danh mục này. Bạn vào mục **Sản phẩm** để xem toàn bộ nhé!";
             }
-            if ($size) {
-                $alt = chatbotGetProductsByFilter($pdo, chatbotEntitiesToFilter(array_merge($e, ['size' => null])) + ['limit' => 3, 'in_stock' => true]);
-                $result['intent'] = 'stock';
-                $result['message'] = "❌ Hiện **chưa có mẫu nào còn size {$size}** theo yêu cầu của bạn." . ($alt ? "\n💡 Mình gợi ý các mẫu tương tự còn size khác 👇" : '');
-                if ($alt) $setProducts($alt);
-                return $result;
-            }
-        } else {
-            $stockQ = chatbotDetectStockQuery($message);
-            $data = $stockQ ? chatbotCheckStock($pdo, $stockQ['keyword'], $size) : null;
-            if (!$data && ($fid = chatbotGetFocusId())) {
-                $p = chatbotGetProductById($pdo, $fid);
-                if ($p) $data = ['product' => $p, 'sizes' => $p['sizes']];
-            }
-            if ($data) {
-                $result['intent'] = 'stock';
-                $result['message'] = chatbotFormatStockResponse($data, $size);
-                $setProducts([$data['product']]);
-                return $result;
-            }
-            if ($stockQ && mb_strlen($stockQ['keyword']) >= 3 && !preg_match('/^(size|co|hang)$/', $stockQ['keyword'])) {
-                $result['message'] = "Mình không tìm thấy sản phẩm \"**" . chatbotSafeText($stockQ['keyword']) . "**\" trong shop 🤔 Bạn thử nói tên/loại khác (VD: \"áo thun nam\") nhé!";
-                return $result;
-            }
-            $result['message'] = "Bạn đang hỏi tồn kho **sản phẩm nào** ạ? Cho mình tên/loại + size nhé. VD: \"**áo sơ mi nam còn size L không**\".";
+            $result['source'] = 'rule_occasion';
             return $result;
         }
-    }
 
-    /* 6. Tham chiếu sản phẩm đã gợi ý: số thứ tự / so sánh / rẻ nhất */
-    $lastIds = chatbotLoadProductContext();
-    if ($lastIds) {
-        if (preg_match('/\b(so sanh|nen chon cai nao|chon cai nao|cai nao tot|khac nhau)\b/', $n)) {
-            $ctxP = chatbotLoadContextProducts($pdo, 4);
-            if (count($ctxP) >= 2) { $result['intent'] = 'compare'; $result['message'] = chatbotFormatComparison($ctxP); return $result; }
-        }
-        if (empty($e['types']) && preg_match('/\b(re nhat|dat nhat|giam nhieu nhat|moi nhat)\b/', $n)) {
-            $ctxP = chatbotLoadContextProducts($pdo, 4);
-            if (count($ctxP) >= 2) {
-                usort($ctxP, fn($a, $b) => chatbotFinalPrice($a) <=> chatbotFinalPrice($b));
-                if (preg_match('/dat nhat/', $n)) $ctxP = array_reverse($ctxP);
-                elseif (preg_match('/giam nhieu nhat/', $n)) usort($ctxP, fn($a, $b) => (int)$b['discount_percent'] <=> (int)$a['discount_percent']);
-                $pick = $ctxP[0];
-                $result['intent'] = 'detail';
-                $result['message'] = "👉 Trong các mẫu vừa gợi ý, **" . $pick['name'] . "** là lựa chọn bạn hỏi (" . chatbotVnd(chatbotFinalPrice($pick)) . ").\n\n" . chatbotFormatProductDetail($pick);
-                $setProducts([$pick]);
-                return $result;
-            }
-        }
-    }
-    $idx = chatbotDetectProductReference($message);
-    if ($idx !== null) {
-        if ($lastIds && isset($lastIds[$idx])) {
-            $p = chatbotGetProductById($pdo, (int)$lastIds[$idx]);
-            if ($p) { $result['intent'] = 'detail'; $result['message'] = chatbotFormatProductDetail($p); $setProducts([$p]); return $result; }
-        }
-        $result['message'] = "Bạn vui lòng tìm sản phẩm trước khi hỏi chi tiết nhé! VD: \"áo thun nam\" 😊";
-        return $result;
-    }
-
-    /* 7. Câu hỏi nối tiếp về "sản phẩm này" (giá / size / chất liệu / màu / mua) */
-    $aspect = null;
-    if (preg_match('/\b(gia|bao nhieu tien|bao nhieu)\b/', $n)) $aspect = 'price';
-    elseif (preg_match('/\b(chat lieu|vai|cotton|co gian|thoang|mong|day|nong)\b/', $n)) $aspect = 'material';
-    elseif (preg_match('/\b(mau|color)\b/', $n)) $aspect = 'color';
-    elseif (preg_match('/\b(size|co san|con hang|ton kho)\b/', $n)) $aspect = 'sizes';
-    elseif (preg_match('/\b(chi tiet|thong tin|mo ta)\b/', $n)) $aspect = 'detail';
-    elseif (preg_match('/\b(dat mua|them vao gio|mua cai nay|mua mon nay|chot|lay cai nay)\b/', $n)) $aspect = 'buy';
-    $hasRef = (bool)preg_match('/\b(nay|do|kia|ay|vua roi|vua xem|tren)\b/', $n);
-    if ($aspect && ($hasRef || ($words <= 5 && empty($e['types']) && !$e['gender']))) {
-        $fid = chatbotGetFocusId() ?? (count($lastIds) === 1 ? (int)$lastIds[0] : null);
-        if ($fid) {
-            $p = chatbotGetProductById($pdo, $fid);
-            if ($p) {
-                $result['intent'] = 'detail';
-                $result['message'] = chatbotFormatProductAspect($p, $aspect, $e['size'] ?? chatbotStandaloneSize($n));
-                $setProducts([$p]);
-                return $result;
-            }
-        } elseif (count($lastIds) > 1 && $hasRef) {
-            $result['message'] = "Bạn đang hỏi **sản phẩm nào** ạ? Nói giúp mình \"**sản phẩm số 1**\", \"**số 2**\"… nhé 😊";
-            return $result;
-        }
-    }
-
-    /* 8. Tư vấn: quà tặng / phối đồ / dáng người */
-    if ($gift = chatbotHandleGift($pdo, $raw, $n, $e)) {
-        $setProducts($gift['products']); $result['message'] = $gift['message']; $result['intent'] = 'gift'; return $result;
-    }
-    if ($outfit = chatbotHandleOutfit($pdo, $n, $e)) {
-        $setProducts($outfit['products']); $result['message'] = $outfit['message']; $result['intent'] = 'outfit'; return $result;
-    }
-    if ($tip = chatbotHandleBodyAdvice($n)) { $result['intent'] = 'body'; $result['message'] = $tip; return $result; }
-
-    /* 9. Knowledge Base (FAQ) */
-    $kb = chatbotMatchKnowledge($n);
-    if ($kb && !(($kb['item']['yield'] ?? false) && $hasEntities)) {
-        $item = $kb['item'];
-        $result['intent'] = $kb['id'];
-        $handler = $item['handler'] ?? null;
-        if ($handler === '__PROMOTIONS__') {
+        // Marker: Show khuyến mãi
+        if ($rule['response'] === '__SHOW_PROMOTIONS__') {
             $result['message'] = chatbotFormatPromotionResponse($pdo);
-            $rows = chatbotGetDiscountedProducts($pdo, 4);
-            if ($rows) $setProducts($rows);
+            $result['source']  = 'rule_promotion';
             return $result;
         }
-        if ($handler === '__ORDER__')      { $result['message'] = chatbotHandleOrderTracking($pdo, $n); return $result; }
-        if ($handler === '__CATEGORIES__') {
-            $cats = chatbotGetCategories($pdo);
-            if ($cats) {
-                $lines = '';
-                foreach ($cats as $c) $lines .= "- **{$c['name']}** ({$c['product_count']} sản phẩm)\n";
-                $result['message'] = "THE ATELIER hiện có các danh mục sau:\n\n{$lines}\nBạn muốn xem danh mục nào ạ?";
-                return $result;
-            }
-        } else {
-            $result['message'] = $item['answer'];
-            $cards = $item['cards'] ?? null;
-            if (is_array($cards)) {
-                $rows = chatbotGetProductsByFilter($pdo, $cards + ['limit' => 4, 'in_stock' => true]);
-                if ($rows) $setProducts($rows);
-            } elseif ($cards === true && ($hasEntities || $e['gender'])) {
-                $res = chatbotSmartSearch($pdo, $e, 3);
-                if ($res['products']) $setProducts($res['products']);
-            }
-            return $result;
-        }
-    }
 
-    /* 10. Gợi ý theo dịp / mùa */
-    if ($occ = chatbotDetectOccasion($n)) {
-        $extra = [];
-        foreach (['gender', 'min_price', 'max_price', 'size'] as $k) if (!empty($e[$k])) $extra[$k] = $e[$k];
-        if (!empty($e['on_sale'])) $extra['on_sale'] = true;
-        if (!empty($e['sort'])) $extra['sort'] = $e['sort'];
-        $rows = chatbotSearchByOccasion($pdo, $occ, 4, $extra);
-        $result['intent'] = 'occasion';
-        if ($rows) {
-            $setProducts($rows);
-            $result['message'] = chatbotGetOccasionMessage($occ) . "\n\n💡 " . chatbotOccasions()[$occ]['tip'];
-        } else {
-            $result['message'] = chatbotOccasions()[$occ]['tip'] . "\n\nMình chưa tìm thấy mẫu phù hợp ngay lúc này. Bạn nói rõ hơn loại đồ/ngân sách để mình tìm giúp nhé!";
-        }
+        // Rule thường
+        $result['message'] = $rule['response'];
         return $result;
     }
 
-    /* 11. Tìm sản phẩm theo thực thể (loại · giới tính · màu · giá · size · sắp xếp) */
-    if ($hasEntities || ($e['gender'] && ($words <= 5 || chatbotHasSearchVerb($n))) || (chatbotHasSearchVerb($n) && $words <= 6)) {
-        $ent = $e;
-        $res = chatbotSmartSearch($pdo, $ent, 4);
-        if ($res['products']) {
-            $setProducts($res['products']);
-            $crit = chatbotDescribeCriteria($res['criteria']);
-            $result['intent'] = 'products';
-            $result['message'] = $res['dropped']
-                ? "Mình chưa có mẫu khớp đủ tiêu chí (**" . implode(', ', $res['dropped']) . "**) nên gợi ý các mẫu **gần nhất**" . ($crit ? " ({$crit})" : '') . " 👇"
-                : "Mình tìm được **" . count($res['products']) . " sản phẩm**" . ($crit ? " ({$crit})" : '') . " 👇";
-            $result['message'] .= "\n\n💬 Hỏi mình \"**sản phẩm số 1**\", \"**so sánh**\" hoặc \"**còn size M không**\" nhé!";
+    /* ---- 2. Check tồn kho cụ thể ---- */
+    $stockQuery = chatbotDetectStockQuery($message);
+    if ($stockQuery !== null) {
+        $stockData = chatbotCheckStock($pdo, $stockQuery['keyword'], $stockQuery['size']);
+        if ($stockData) {
+            $result['message']  = chatbotFormatStockResponse($stockData, $stockQuery['size']);
+            $result['products'] = [$stockData['product']];
+            $result['source']   = 'stock_check';
             return $result;
         }
-        if ($hasEntities) {
-            $result['intent'] = 'products';
-            $result['message'] = "Mình chưa tìm thấy sản phẩm khớp \"**" . chatbotSafeText(chatbotDescribeCriteria($e) ?: $raw, 60) . "**\" 🤔\nBạn thử đổi **loại/màu/mức giá**, hoặc hỏi \"**hàng mới**\", \"**đang giảm giá**\" nhé!";
+        $result['message'] = "Mình không tìm thấy sản phẩm \"**{$stockQuery['keyword']}**\" trong shop.\n\n"
+                           . "Bạn kiểm tra lại tên sản phẩm hoặc vào mục **Sản phẩm** để xem danh sách nhé!\n"
+                           . "Hoặc gọi hotline **1900 123 456** để được hỗ trợ ạ.";
+        $result['source'] = 'stock_not_found';
+        return $result;
+    }
+
+    /* ---- 3. Product reference (thứ X / cái này) ---- */
+    $productIdx = chatbotDetectProductReference($message);
+    if ($productIdx !== null) {
+        $lastIds = chatbotLoadProductContext();
+        if (!empty($lastIds) && isset($lastIds[$productIdx])) {
+            $productId = (int)$lastIds[$productIdx];
+            $product = chatbotGetProductById($pdo, $productId);
+            if ($product) {
+                $result['message']  = chatbotFormatProductDetail($product);
+                $result['products'] = [$product];
+                $result['source']   = 'product_detail';
+                return $result;
+            }
+        }
+        $result['message'] = "Mình chưa thấy danh sách sản phẩm nào bạn xem trước đó.\n\n"
+                           . "Bạn muốn tìm sản phẩm gì? Ví dụ:\n"
+                           . "- \"shop có đồ nam không\"\n"
+                           . "- \"tìm áo thun\"\n"
+                           . "- \"sản phẩm đang sale\"";
+        return $result;
+    }
+
+    /* ---- 4. Intent detection nâng cao ---- */
+    $msg = mb_strtolower($message);
+
+    // Hỏi shop có gì
+    if (preg_match('/(shop|cửa hàng|bên mình)\s+(có|bán)\s+(gì|những gì)/iu', $msg)
+        || preg_match('/(danh mục|loại sản phẩm|mặt hàng)/iu', $msg)) {
+        $categories = chatbotGetCategories($pdo);
+        if (!empty($categories)) {
+            $lines = '';
+            foreach ($categories as $c) $lines .= "- **{$c['name']}** ({$c['product_count']} sản phẩm)\n";
+            $result['message'] = "THE ATELIER hiện có các danh mục sau:\n\n$lines\nBạn muốn xem danh mục nào ạ?";
             return $result;
         }
     }
 
-    /* 12. Groq AI (có RAG) */
-    if (defined('GROQ_API_KEY') && !empty(GROQ_API_KEY) && chatbotAiAllowed()) {
-        $ctxRows = [];
-        $f = chatbotEntitiesToFilter($e);
-        $ctxRows = chatbotGetProductsByFilter($pdo, ($f ?: ['sort' => 'newest']) + ['limit' => 5]);
-        if (!$ctxRows) $ctxRows = chatbotGetProductsByFilter($pdo, ['sort' => 'newest', 'limit' => 5]);
+    // Hàng mới
+    if (preg_match('/(hàng|sản phẩm)\s+(mới|mới về|mới nhất)/iu', $msg)) {
+        $products = chatbotGetNewestProducts($pdo, 4);
+        if (!empty($products)) {
+            $result['products'] = $products;
+            $result['message']  = "Đây là những sản phẩm **mới nhất** vừa về shop:";
+            return $result;
+        }
+    }
+
+    // Khoảng giá
+    if (preg_match('/(dưới|tầm|khoảng|trên)\s*(\d+)\s*(k|nghìn|000|tr|triệu)/iu', $msg, $m)) {
+        $num = (int)$m[2]; $unit = mb_strtolower($m[3]); $price = $num;
+        if (in_array($unit, ['k', 'nghìn', '000'], true))  $price *= 1000;
+        elseif (in_array($unit, ['tr', 'triệu'], true))    $price *= 1000000;
+
+        $filters = ['limit' => 4, 'sort' => 'best_seller'];
+        if (mb_strpos($msg, 'dưới') !== false)      $filters['max_price'] = $price;
+        elseif (mb_strpos($msg, 'trên') !== false)  $filters['min_price'] = $price;
+        else {
+            $filters['min_price'] = (int)($price * 0.8);
+            $filters['max_price'] = (int)($price * 1.2);
+        }
+
+        $products = chatbotGetProductsByFilter($pdo, $filters);
+        if (!empty($products)) {
+            $result['products'] = $products;
+            $result['message']  = "Mình tìm được vài sản phẩm trong khoảng giá bạn hỏi:";
+            return $result;
+        }
+    }
+
+    // Search keyword
+    $keyword = chatbotExtractProductKeyword($message);
+    if ($keyword !== null) {
+        $products = chatbotSearchProducts($pdo, $keyword, 4);
+        if (!empty($products)) {
+            $result['products'] = $products;
+            $result['message']  = "Mình tìm được **" . count($products) . " sản phẩm** phù hợp.\n\nBạn xem thử nhé!";
+            $result['source']   = 'rule_search';
+            return $result;
+        }
+    }
+
+    if (defined('OPENAI_API_KEY') && !empty(OPENAI_API_KEY) && strpos(OPENAI_API_KEY, 'sk-') === 0) {
         $history = $_SESSION['chat_history'] ?? [];
-        $aiReply = chatbotCallGroq($message, array_slice($history, -12), chatbotBuildEnhancedSystemPrompt($pdo, ['products' => $ctxRows]));
+        if (count($history) > 20) $history = array_slice($history, -20);
+
+        /* Phân tích độ phức tạp để chọn model + effort */
+        $complexity = chatbotDetectComplexity($message);
+
+        $systemPrompt = chatbotBuildEnhancedSystemPrompt($pdo);
+        $aiReply = chatbotCallOpenAI($message, $history, $systemPrompt, [
+            'complexity' => $complexity['level'],
+        ]);
+
         if ($aiReply !== null && $aiReply !== '') {
-            $result['message'] = $aiReply; $result['source'] = 'ai'; $result['intent'] = 'ai';
-            $mentioned = [];                                              // chỉ kèm thẻ SP mà AI thực sự nhắc tới
-            foreach ($ctxRows as $p) if (mb_stripos($aiReply, $p['name']) !== false) $mentioned[] = $p;
-            if ($mentioned) $setProducts(array_slice($mentioned, 0, 3));
+            $result['message']    = $aiReply;
+            $result['source']     = 'openai_' . $complexity['level'];
+            $result['complexity'] = $complexity;
+
+            $_SESSION['chat_history'][] = ['role' => 'user',      'content' => $message];
+            $_SESSION['chat_history'][] = ['role' => 'assistant', 'content' => $aiReply];
+
+            $searchKeyword = chatbotExtractProductKeyword($aiReply);
+            if ($searchKeyword !== null) {
+                $products = chatbotSearchProducts($pdo, $searchKeyword, 3);
+                if (!empty($products)) $result['products'] = $products;
+            }
+
+            error_log(sprintf(
+                '[chatbot] complexity=%s score=%d len=%d q=%d',
+                $complexity['level'], $complexity['score'],
+                $complexity['length'], $complexity['questions']
+            ));
             return $result;
         }
     }
 
-    /* 13. Fallback cuối */
-    chatbotLogUnanswered($message);
-    $result['message'] = "Xin lỗi, mình chưa hiểu rõ ý bạn 😅\n\nBạn thử hỏi theo mẫu:\n- \"**áo thun nam màu đen dưới 300k**\"\n- \"**1m65 55kg mặc size gì**\"\n- \"**mặc gì đi tiệc**\" · \"**quà tặng bạn gái**\"\n- \"**đổi trả**\" · \"**phí ship**\"\n\nHoặc gọi hotline **" . CHATBOT_HOTLINE . "** để được hỗ trợ nhé!";
+    /* ---- 6. Fallback cuối — hotline ---- */
+    $result['message'] = chatbotGetFallbackMessage();
+    $result['source']  = 'fallback';
     return $result;
 }

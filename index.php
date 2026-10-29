@@ -1,6 +1,52 @@
 <?php require_once 'includes/config.php'; ?>
 <?php include 'includes/header.php'; ?>
 
+<style>
+    /* THÊM CSS ĐỂ CUỘN MƯỢT */
+    html {
+        scroll-behavior: smooth;
+        /* Bù trừ khoảng 90px để header không che mất tiêu đề khi cuộn */
+        scroll-padding-top: 90px; 
+    }
+</style>
+
+<?php
+// TỰ ĐỘNG TẠO BẢNG VÀ SEED DỮ LIỆU NẾU CHƯA CÓ
+try {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS `homepage_sections` (
+      `id` int(11) NOT NULL AUTO_INCREMENT,
+      `title` varchar(150) NOT NULL,
+      `subtitle` varchar(150) DEFAULT NULL,
+      `link` varchar(255) DEFAULT NULL,
+      `section_key` varchar(100) NOT NULL,
+      `display_order` int(11) DEFAULT 0,
+      `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (`id`),
+      UNIQUE KEY `section_key` (`section_key`)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+
+    $count = $pdo->query("SELECT COUNT(*) FROM homepage_sections")->fetchColumn();
+    if ($count == 0) {
+        $defaults = [
+            ['Đang giảm giá', 'Ưu đãi có hạn', 'products.php?collection=giam-gia', 'giam-gia', 1],
+            ['Combo thu đông', 'Bộ sưu tập theo mùa', 'products.php?collection=combo-thu-dong', 'combo-thu-dong', 2],
+            ['Bán chạy nhất', 'Được yêu thích nhất', 'products.php?collection=ban-chay', 'ban-chay', 3],
+            ['Giảm kịch sàn', 'Xả kho giá sốc', 'products.php?collection=giam-kich-san', 'giam-kich-san', 4],
+            ['Combo đồ thời trang', 'Tiết kiệm hơn khi mua set', 'products.php?collection=combo-thoi-trang', 'combo-thoi-trang', 5],
+            ['Phong cách tối giản', 'Thanh lịch & Tinh tế', 'products.php?collection=phong-cach-toi-gian', 'phong-cach-toi-gian', 6],
+            ['Khuyến mãi mùa hè', 'Rực rỡ & Năng động', 'products.php?collection=khuyen-mai-mua-he', 'khuyen-mai-mua-he', 7],
+            ['Sản phẩm mới', 'Vừa cập bến', 'products.php?collection=san-pham-moi', 'san-pham-moi', 8],
+        ];
+        $stmt = $pdo->prepare("INSERT INTO homepage_sections (title, subtitle, link, section_key, display_order) VALUES (?, ?, ?, ?, ?)");
+        foreach ($defaults as $d) {
+            $stmt->execute($d);
+        }
+    }
+} catch (Exception $e) {
+    // Bỏ qua nếu có lỗi (ví dụ không có quyền tạo bảng)
+}
+?>
+
 <div class="container-custom">
 
     <!-- ============ BANNER SLIDER ============ -->
@@ -15,7 +61,8 @@
                 <ul class="banner__track" id="bannerTrack">
                     <?php foreach ($banners as $i => $banner): ?>
                     <li class="banner__slide" role="group" aria-roledescription="slide" aria-label="<?php echo ($i + 1) . '/' . $bannerCount; ?>">
-                        <a class="banner__link" href="<?php echo sanitize($banner['link']); ?>">
+                        <!-- LINK NHẬN TỪ DATABASE -->
+                        <a class="banner__link" href="<?php echo sanitize($banner['link'] ?: '#'); ?>">
                             <img class="banner__image"
                                  src="<?php echo sanitize($banner['image_url']); ?>"
                                  alt="<?php echo sanitize($banner['title']); ?>"
@@ -33,8 +80,12 @@
                 </ul>
             </div>
             <?php if ($bannerCount > 1): ?>
-            <button type="button" class="banner__arrow banner__arrow--prev" id="bannerPrev" aria-label="Ảnh trước">❮</button>
-            <button type="button" class="banner__arrow banner__arrow--next" id="bannerNext" aria-label="Ảnh sau">❯</button>
+            <button type="button" class="banner__arrow banner__arrow--prev" id="bannerPrev" aria-label="Ảnh trước">
+                <i class="ph ph-caret-left"></i>
+            </button>
+            <button type="button" class="banner__arrow banner__arrow--next" id="bannerNext" aria-label="Ảnh sau">
+                <i class="ph ph-caret-right"></i>
+            </button>
             <div class="banner__dots" id="bannerDots" role="tablist" aria-label="Chọn banner"></div>
             <?php endif; ?>
         </div>
@@ -44,16 +95,9 @@
 
     <!-- ============ HELPER: Render Product Card ============ -->
     <?php
-    /**
-     * Hàm render 1 product card đẹp cho homepage
-     * @param array $product  Dữ liệu sản phẩm
-     * @param PDO   $pdo      Kết nối DB (để query rating)
-     * @param string $variant 'sale' | 'combo' | 'best' | 'default'
-     */
     function renderHomeProductCard(array $product, PDO $pdo, string $variant = 'default'): string {
         $pid = (int)$product['id'];
 
-        // Tính giá
         if (function_exists('calculateProductPrice')) {
             $pricing = calculateProductPrice($product);
         } else {
@@ -69,7 +113,6 @@
             ];
         }
 
-        // Lấy rating từ DB
         $rvStmt = $pdo->prepare("
             SELECT COUNT(*) AS total, COALESCE(AVG(rating), 0) AS avg_r
             FROM reviews WHERE product_id = ?
@@ -79,17 +122,15 @@
         $totalReviews = (int)$rv['total'];
         $avgRating = round((float)$rv['avg_r'], 1);
 
-        // Tính % tiết kiệm
         $savedAmount = $pricing['original'] - $pricing['final'];
         $savedPct = $pricing['percent'];
 
-        // Badge riêng theo variant
         $badges = [];
         if ($savedPct > 0) {
             $badges[] = '<span class="pc__badge pc__badge--sale">-'.$savedPct.'%</span>';
         }
         if ($variant === 'best') {
-            $badges[] = '<span class="pc__badge pc__badge--best">🔥 Bán chạy</span>';
+            $badges[] = '<span class="pc__badge pc__badge--best"> Bán chạy</span>';
         }
         if ($variant === 'combo') {
             $badges[] = '<span class="pc__badge pc__badge--combo">Combo</span>';
@@ -97,7 +138,6 @@
 
         ob_start(); ?>
         <article class="pc">
-            <!-- MEDIA -->
             <div class="pc__media">
                 <a href="product-details.php?id=<?php echo $pid; ?>" class="pc__media-link">
                     <img src="<?php echo sanitize($product['image_url']); ?>"
@@ -106,12 +146,10 @@
                          class="pc__img">
                 </a>
 
-                <!-- Badges -->
                 <?php if (!empty($badges)): ?>
                     <div class="pc__badges"><?php echo implode('', $badges); ?></div>
                 <?php endif; ?>
 
-                <!-- Action buttons (hiện khi hover) -->
                 <div class="pc__actions">
                     <button type="button" class="pc__action" title="Yêu thích" aria-label="Yêu thích">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -126,7 +164,6 @@
                     </button>
                 </div>
 
-                <!-- Quick add to cart (slide up khi hover) -->
                 <a href="product-details.php?id=<?php echo $pid; ?>" class="pc__quick-add">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <circle cx="9" cy="21" r="1"/>
@@ -137,9 +174,7 @@
                 </a>
             </div>
 
-            <!-- BODY -->
             <div class="pc__body">
-                <!-- Category + sold -->
                 <div class="pc__meta">
                     <span class="pc__category"><?php echo sanitize($product['category_name'] ?? 'Thời trang'); ?></span>
                     <?php if ((int)$product['sold_count'] > 0): ?>
@@ -147,14 +182,12 @@
                     <?php endif; ?>
                 </div>
 
-                <!-- Title -->
                 <h3 class="pc__title">
                     <a href="product-details.php?id=<?php echo $pid; ?>">
                         <?php echo sanitize($product['name']); ?>
                     </a>
                 </h3>
 
-                <!-- Rating -->
                 <div class="pc__rating">
                     <?php if ($totalReviews > 0): ?>
                         <span class="pc__stars">
@@ -173,7 +206,6 @@
                     <?php endif; ?>
                 </div>
 
-                <!-- Price -->
                 <div class="pc__price">
                     <div class="pc__price-main">
                         <span class="pc__price-current"><?php echo number_format($pricing['final'], 0, ',', '.'); ?><u>đ</u></span>
@@ -188,7 +220,6 @@
                     <?php endif; ?>
                 </div>
 
-                <!-- CTA -->
                 <a href="product-details.php?id=<?php echo $pid; ?>" class="pc__cta">
                     Xem chi tiết
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -203,97 +234,118 @@
     ?>
 
 
-    <!-- ============ ĐANG GIẢM GIÁ ============ -->
+    <!-- ============ RENDER CÁC KHỐI ĐỘNG TỪ DATABASE ============ -->
     <?php
-    $saleProducts = $pdo->query("
-        SELECT p.*, c.name AS category_name
-        FROM products p
-        LEFT JOIN categories c ON p.category_id = c.id
-        WHERE p.discount_percent > 0
-        ORDER BY p.discount_percent DESC
-        LIMIT 4
-    ")->fetchAll(PDO::FETCH_ASSOC);
-    if (!empty($saleProducts)):
+    $sections = $pdo->query("SELECT * FROM homepage_sections ORDER BY display_order ASC, id ASC")->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($sections as $sec) {
+        $key = $sec['section_key'];
+        $variant = 'default';
+        $products = [];
+
+        // Query sản phẩm dựa trên section_key
+        if ($key === 'giam-gia') {
+            $variant = 'sale';
+            $products = $pdo->query("
+                SELECT p.*, c.name AS category_name
+                FROM products p
+                LEFT JOIN categories c ON p.category_id = c.id
+                WHERE p.discount_percent > 0 AND p.id < 100
+                ORDER BY p.discount_percent DESC
+                LIMIT 4
+            ")->fetchAll(PDO::FETCH_ASSOC);
+        } elseif ($key === 'combo-thu-dong') {
+            $variant = 'combo';
+            $products = $pdo->query("
+                SELECT p.*, c.name AS category_name
+                FROM products p
+                LEFT JOIN categories c ON p.category_id = c.id
+                WHERE p.category_id = (SELECT id FROM categories WHERE slug='combo' LIMIT 1)
+                  AND p.id < 100
+                ORDER BY p.created_at DESC
+                LIMIT 4
+            ")->fetchAll(PDO::FETCH_ASSOC);
+        } elseif ($key === 'ban-chay') {
+            $variant = 'best';
+            $products = $pdo->query("
+                SELECT p.*, c.name AS category_name
+                FROM products p
+                LEFT JOIN categories c ON p.category_id = c.id
+                WHERE p.sold_count > 0
+                ORDER BY p.sold_count DESC
+                LIMIT 4
+            ")->fetchAll(PDO::FETCH_ASSOC);
+        } elseif ($key === 'giam-kich-san') {
+            $variant = 'sale';
+            $products = $pdo->query("
+                SELECT p.*, c.name AS category_name
+                FROM products p
+                LEFT JOIN categories c ON p.category_id = c.id
+                WHERE p.id BETWEEN 100 AND 104
+                ORDER BY p.discount_percent DESC
+                LIMIT 4
+            ")->fetchAll(PDO::FETCH_ASSOC);
+        } elseif ($key === 'combo-thoi-trang') {
+            $variant = 'combo';
+            $products = $pdo->query("
+                SELECT p.*, c.name AS category_name
+                FROM products p
+                LEFT JOIN categories c ON p.category_id = c.id
+                WHERE p.id BETWEEN 105 AND 109
+                ORDER BY p.id ASC
+                LIMIT 4
+            ")->fetchAll(PDO::FETCH_ASSOC);
+        } elseif ($key === 'phong-cach-toi-gian') {
+            $products = $pdo->query("
+                SELECT p.*, c.name AS category_name
+                FROM products p
+                LEFT JOIN categories c ON p.category_id = c.id
+                WHERE p.id BETWEEN 110 AND 114
+                ORDER BY p.id ASC
+                LIMIT 4
+            ")->fetchAll(PDO::FETCH_ASSOC);
+        } elseif ($key === 'khuyen-mai-mua-he') {
+            $products = $pdo->query("
+                SELECT p.*, c.name AS category_name
+                FROM products p
+                LEFT JOIN categories c ON p.category_id = c.id
+                WHERE p.id BETWEEN 115 AND 119
+                ORDER BY p.id ASC
+                LIMIT 4
+            ")->fetchAll(PDO::FETCH_ASSOC);
+        } elseif ($key === 'san-pham-moi') {
+            $products = $pdo->query("
+                SELECT p.*, c.name AS category_name
+                FROM products p
+                LEFT JOIN categories c ON p.category_id = c.id
+                WHERE p.id BETWEEN 120 AND 124
+                ORDER BY p.created_at DESC
+                LIMIT 4
+            ")->fetchAll(PDO::FETCH_ASSOC);
+        }
+
+        if (empty($products)) continue;
     ?>
-    <section class="product-section">
-        <div class="section-head">
-            <span class="tag-eyebrow">Ưu đãi có hạn</span>
-            <div class="section-head-row">
-                <h2 class="section-title">Đang giảm giá</h2>
-                <a href="products.php?sort=discount" class="view-more">
-                    Xem tất cả <span aria-hidden="true">→</span>
-                </a>
+        <section class="product-section" id="<?php echo htmlspecialchars($key); ?>">
+            <div class="section-head">
+                <span class="tag-eyebrow"><?php echo htmlspecialchars($sec['subtitle'] ?? ''); ?></span>
+                <div class="section-head-row">
+                    <h2 class="section-title"><?php echo htmlspecialchars($sec['title']); ?></h2>
+                    <?php if (!empty($sec['link'])): ?>
+                    <a href="<?php echo htmlspecialchars($sec['link']); ?>" class="view-more">
+                        Xem tất cả <span aria-hidden="true">→</span>
+                    </a>
+                    <?php endif; ?>
+                </div>
             </div>
-        </div>
-        <div class="product-grid product-grid--home">
-            <?php foreach ($saleProducts as $product): ?>
-                <?php echo renderHomeProductCard($product, $pdo, 'sale'); ?>
-            <?php endforeach; ?>
-        </div>
-    </section>
-    <?php endif; ?>
-
-
-    <!-- ============ COMBO THU ĐÔNG ============ -->
-    <?php
-    $comboProducts = $pdo->query("
-        SELECT p.*, c.name AS category_name
-        FROM products p
-        LEFT JOIN categories c ON p.category_id = c.id
-        WHERE p.category_id = (SELECT id FROM categories WHERE slug='combo' LIMIT 1)
-        ORDER BY p.created_at DESC
-        LIMIT 4
-    ")->fetchAll(PDO::FETCH_ASSOC);
-    if (!empty($comboProducts)):
-    ?>
-    <section class="product-section">
-        <div class="section-head">
-            <span class="tag-eyebrow">Bộ sưu tập theo mùa</span>
-            <div class="section-head-row">
-                <h2 class="section-title">Combo thu đông</h2>
-                <a href="products.php?category=<?php echo (int)$comboProducts[0]['category_id']; ?>" class="view-more">
-                    Xem tất cả <span aria-hidden="true">→</span>
-                </a>
+            <div class="product-grid product-grid--home">
+                <?php foreach ($products as $product): ?>
+                    <?php echo renderHomeProductCard($product, $pdo, $variant); ?>
+                <?php endforeach; ?>
             </div>
-        </div>
-        <div class="product-grid product-grid--home">
-            <?php foreach ($comboProducts as $product): ?>
-                <?php echo renderHomeProductCard($product, $pdo, 'combo'); ?>
-            <?php endforeach; ?>
-        </div>
-    </section>
-    <?php endif; ?>
+        </section>
+    <?php } ?>
 
-
-    <!-- ============ BÁN CHẠY ============ -->
-    <?php
-    $bestSellers = $pdo->query("
-        SELECT p.*, c.name AS category_name
-        FROM products p
-        LEFT JOIN categories c ON p.category_id = c.id
-        WHERE p.sold_count > 0
-        ORDER BY p.sold_count DESC
-        LIMIT 4
-    ")->fetchAll(PDO::FETCH_ASSOC);
-    if (!empty($bestSellers)):
-    ?>
-    <section class="product-section">
-        <div class="section-head">
-            <span class="tag-eyebrow">Được yêu thích nhất</span>
-            <div class="section-head-row">
-                <h2 class="section-title">Bán chạy nhất</h2>
-                <a href="products.php?sort=best_seller" class="view-more">
-                    Xem tất cả <span aria-hidden="true">→</span>
-                </a>
-            </div>
-        </div>
-        <div class="product-grid product-grid--home">
-            <?php foreach ($bestSellers as $product): ?>
-                <?php echo renderHomeProductCard($product, $pdo, 'best'); ?>
-            <?php endforeach; ?>
-        </div>
-    </section>
-    <?php endif; ?>
 
     <div class="view-all">
         <a href="products.php" class="btn-view-all">Khám phá tất cả sản phẩm</a>

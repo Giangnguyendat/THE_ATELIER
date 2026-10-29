@@ -3,24 +3,35 @@ require_once '../includes/config.php';
 include 'includes/admin_header.php';
 
 /* ============================================================
-   LẤY DỮ LIỆU
+   LẤY DỮ LIỆU & BỘ LỌC
    ============================================================ */
-$filter    = $_GET['status'] ?? '';
-$payFilter = $_GET['pay'] ?? '';
-$search    = trim($_GET['q'] ?? '');
+$filter     = $_GET['status'] ?? '';
+$payFilter  = $_GET['pay'] ?? '';
+$typeFilter = $_GET['type'] ?? ''; // Lọc Loại đơn
+$search     = trim($_GET['q'] ?? '');
 
 $where = []; $params = [];
 
+// Lọc trạng thái
 if (in_array($filter, ['pending','processing','confirmed','shipped','delivered','cancelled'], true)) {
     $where[]  = 'o.status = ?';
     $params[] = $filter;
 }
 
+// Lọc loại đơn (Đơn thường / Đơn đổi trả)
+if ($typeFilter === 'exchange') {
+    $where[] = "o.order_type = 'exchange'";
+} elseif ($typeFilter === 'regular') {
+    $where[] = "(o.order_type = 'regular' OR o.order_type IS NULL)";
+}
+
+// Lọc thanh toán
 if (in_array($payFilter, ['unpaid','pending','paid','refund_pending'], true)) {
     $where[]  = 'o.payment_status = ?';
     $params[] = $payFilter;
 }
 
+// Tìm kiếm
 if ($search !== '') {
     $where[]  = "(o.id = ? OR o.full_name LIKE ? OR o.phone LIKE ? OR u.email LIKE ?)";
     $params[] = is_numeric($search) ? (int)$search : 0;
@@ -56,7 +67,6 @@ $statusMap = [
     'cancelled'  => ['Đã hủy',      'adm-badge--red'],
 ];
 
-// Sử dụng Phosphor Icons thay cho Emoji
 $payMap = [
     'cod'    => '<i class="ph ph-money"></i> COD',
     'bank'   => '<i class="ph ph-bank"></i> Chuyển khoản',
@@ -393,9 +403,13 @@ foreach ($payCountStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             <h1>Đơn hàng</h1>
             <div class="subtitle">
                 Hiển thị <b><?php echo count($orders); ?></b> đơn hàng
-                <?php if ($filter !== '' || $search !== '' || $payFilter !== ''): ?>— đã lọc<?php endif; ?>
+                <?php if ($filter !== '' || $search !== '' || $payFilter !== '' || $typeFilter !== ''): ?>— đã lọc<?php endif; ?>
             </div>
         </div>
+        <!-- NÚT TẠO ĐƠN HÀNG MỚI -->
+        <a href="order-create.php" class="btn-adm btn-adm--primary" style="display:inline-flex; align-items:center; gap:6px; padding:0.7rem 1.25rem;">
+            <i class="ph ph-plus-circle" style="font-size:1.1rem;"></i> Tạo đơn hàng mới
+        </a>
     </div>
 
     <!-- STATS -->
@@ -471,6 +485,15 @@ foreach ($payCountStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
                     <?php endforeach; ?>
                 </select>
             </div>
+             <!-- Ô Lọc Loại Đơn -->
+            <div class="adm-filter-field" style="flex: 1 1 150px;">
+                <label class="adm-filter-label">Loại đơn</label>
+                <select name="type" class="adm-select">
+                    <option value="">Tất cả</option>
+                    <option value="regular" <?php echo $typeFilter === 'regular' ? 'selected' : ''; ?>>Đơn thường</option>
+                    <option value="exchange" <?php echo $typeFilter === 'exchange' ? 'selected' : ''; ?>>Đơn đổi trả</option>
+                </select>
+            </div>
             <div class="adm-filter-field adm-filter-field--pay">
                 <label class="adm-filter-label">Thanh toán</label>
                 <select name="pay" class="adm-select">
@@ -483,7 +506,7 @@ foreach ($payCountStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             </div>
             <div class="adm-filter-actions">
                 <button type="submit" class="btn-adm btn-adm--primary">Lọc</button>
-                <?php if ($search !== '' || $filter !== '' || $payFilter !== ''): ?>
+                <?php if ($search !== '' || $filter !== '' || $payFilter !== '' || $typeFilter !== ''): ?>
                     <a href="orders.php" class="btn-adm btn-adm--ghost">Xóa lọc</a>
                 <?php endif; ?>
             </div>
@@ -517,6 +540,7 @@ foreach ($payCountStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
                             $isCancelled = $o['status'] === 'cancelled';
                             $ps = $o['payment_status'] ?? 'unpaid';
                             $psInfo = $payStatusMap[$ps] ?? ['Không rõ', 'adm-badge--gray'];
+                            $isExchange = ($o['order_type'] ?? 'regular') === 'exchange';
                         ?>
                             <tr class="<?php echo $isCancelled ? 'adm-row--cancelled' : ''; ?>"
                                 data-pay="<?php echo htmlspecialchars($ps); ?>">
@@ -546,9 +570,25 @@ foreach ($payCountStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
                                     <?php endif; ?>
                                 </td>
                                 <td>
-                                    <span class="adm-badge <?php echo $statusMap[$o['status']][1] ?? 'adm-badge--gray'; ?>">
-                                        <?php echo $statusMap[$o['status']][0] ?? $o['status']; ?>
-                                    </span>
+                                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                                        <!-- Badge trạng thái chính -->
+                                        <span class="adm-badge <?php echo $statusMap[$o['status']][1] ?? 'adm-badge--gray'; ?>">
+                                            <?php echo $statusMap[$o['status']][0] ?? $o['status']; ?>
+                                        </span>
+                                        
+                                        <!-- Badge phụ: Đơn đổi trả -->
+                                        <?php if ($isExchange): ?>
+                                            <span class="adm-badge" style="background:#fef3c7; color:#d97706; border-color:#fcd34d; font-size:0.7rem; font-weight:700;">
+                                                <i class="ph ph-arrows-clockwise"></i> Đơn đổi trả
+                                            </span>
+                                            <?php if (!empty($o['parent_order_id'])): ?>
+                                                <div style="font-size:0.72rem; color:#8a8377; font-weight:600; width:100%;">
+                                                    (Từ đơn <a href="order-detail.php?id=<?php echo (int)$o['parent_order_id']; ?>" target="_blank" style="color:#a8461f; text-decoration:underline;">#<?php echo (int)$o['parent_order_id']; ?></a>)
+                                                </div>
+                                            <?php endif; ?>
+                                        <?php endif; ?>
+                                    </div>
+
                                     <?php if ($isCancelled && !empty($o['cancel_reason'])): ?>
                                         <div class="adm-cancel-note">
                                             <b>Lý do:</b> <?php echo htmlspecialchars($o['cancel_reason']); ?>
@@ -604,7 +644,7 @@ var orderModal = document.getElementById('orderDetailModal');
 function viewOrderQuick(orderId) {
     document.getElementById('orderModalTitle').textContent = 'Chi tiết đơn hàng #' + orderId;
     document.getElementById('orderDetailContent').innerHTML =
-        '<p style="text-align:center;padding:2rem;color:#8a8377;">⏳ Đang tải chi tiết...</p>';
+        '<p style="text-align:center;padding:2rem;color:#8a8377;"><i class="ph ph-spinner-gap" style="font-size:1.5rem;animation:spin 1s linear infinite;"></i> Đang tải chi tiết...</p>';
     orderModal.classList.add('show');
     document.body.style.overflow = 'hidden';
 
@@ -613,14 +653,14 @@ function viewOrderQuick(orderId) {
         .then(function (data) {
             if (!data.ok) {
                 document.getElementById('orderDetailContent').innerHTML =
-                    '<p style="text-align:center;padding:2rem;color:#b91c1c;">' + (data.msg || 'Không tải được') + '</p>';
+                    '<p style="text-align:center;padding:2rem;color:#b91c1c;"><i class="ph ph-warning"></i> ' + (data.msg || 'Không tải được') + '</p>';
                 return;
             }
             renderOrderDetail(data.order, data.items);
         })
         .catch(function () {
             document.getElementById('orderDetailContent').innerHTML =
-                '<p style="text-align:center;padding:2rem;color:#b91c1c;">Lỗi kết nối.</p>';
+                '<p style="text-align:center;padding:2rem;color:#b91c1c;"><i class="ph ph-warning"></i> Lỗi kết nối.</p>';
         });
 }
 
@@ -630,7 +670,6 @@ function renderOrderDetail(o, items) {
         'shipped': 'Đang giao', 'delivered': 'Đã giao', 'cancelled': 'Đã hủy'
     };
     
-    // Sử dụng Phosphor Icons cho Modal
     var payLabels = { 
         'cod': '<i class="ph ph-money"></i> COD', 
         'bank': '<i class="ph ph-bank"></i> Chuyển khoản', 
@@ -638,9 +677,20 @@ function renderOrderDetail(o, items) {
         'wallet': '<i class="ph ph-wallet"></i> Atelier Pay' 
     };
 
+    var isExchange = o.order_type === 'exchange';
     var html = '';
+
+    // Banner thông báo nếu là đơn đổi trả
+    if (isExchange) {
+        html += '<div style="background:#fef9f3; border:1px solid #fed7aa; border-radius:8px; padding:10px 14px; margin-bottom:1rem; font-size:0.88rem; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">';
+        html += '<i class="ph ph-arrows-clockwise" style="color:#a8461f; font-size:1.15rem;"></i>';
+        html += '<span>Đây là <b>đơn đổi trả</b> từ đơn gốc <a href="order-detail.php?id=' + o.parent_order_id + '" target="_blank" style="font-weight:700; color:#a8461f;">#' + o.parent_order_id + '</a></span>';
+        html += '</div>';
+    }
+
     html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem;">';
 
+    // Cột 1: Người nhận
     html += '<div style="background:#faf8f4;padding:1rem;border-radius:10px;border:1px solid #efeae0;">';
     html += '<div style="font-size:0.7rem;letter-spacing:0.1em;text-transform:uppercase;color:#8a8377;margin-bottom:0.6rem;font-weight:700;"><i class="ph ph-user"></i> Người nhận</div>';
     html += '<div style="font-size:0.9rem;line-height:1.7;">';
@@ -650,6 +700,7 @@ function renderOrderDetail(o, items) {
     if (o.note) html += '<div style="font-style:italic;color:#8a8377;margin-top:0.35rem;"><i class="ph ph-note"></i> "' + escapeHtml(o.note) + '"</div>';
     html += '</div></div>';
 
+    // Cột 2: Thông tin đơn
     html += '<div style="background:#faf8f4;padding:1rem;border-radius:10px;border:1px solid #efeae0;">';
     html += '<div style="font-size:0.7rem;letter-spacing:0.1em;text-transform:uppercase;color:#8a8377;margin-bottom:0.6rem;font-weight:700;"><i class="ph ph-clipboard-text"></i> Đơn hàng</div>';
     html += '<div style="font-size:0.9rem;line-height:1.7;">';
@@ -660,36 +711,24 @@ function renderOrderDetail(o, items) {
 
     var payStatusColor = { 'unpaid':'#57534e','pending':'#c2410c','paid':'#15803d','refund_pending':'#b91c1c' };
     var payStatusBg = { 'unpaid':'#f5f5f4','pending':'#fff7ed','paid':'#f0fdf4','refund_pending':'#fef2f2' };
-    var payStatusLabel = {
-        'unpaid':'Chưa thanh toán','pending':'Chờ thanh toán',
-        'paid':'Đã thanh toán','refund_pending':'Chờ hoàn tiền'
-    };
     var ps = o.payment_status || 'unpaid';
-    var psLabel = o.payment_status_label || payStatusLabel[ps] || ps;
+    var psLabel = o.payment_status_label || ps;
 
     html += '<div style="margin-top:0.35rem;">Thanh toán: ';
     html += '<span style="display:inline-block;padding:2px 10px;border-radius:999px;font-size:0.78rem;font-weight:700;color:'
          + (payStatusColor[ps] || '#57534e') + ';background:' + (payStatusBg[ps] || '#f5f5f4') + ';">'
          + psLabel + '</span></div>';
-
-    if (ps === 'paid' && o.paid_at_fmt) {
-        html += '<div style="font-size:0.78rem;color:#8a8377;margin-top:0.2rem;"><i class="ph ph-check"></i> Lúc: ' + o.paid_at_fmt + '</div>';
-    }
-    if (o.payment_note) {
-        html += '<div style="font-size:0.78rem;color:#8a8377;margin-top:0.2rem;font-style:italic;"><i class="ph ph-note"></i> ' + escapeHtml(o.payment_note) + '</div>';
-    }
     html += '</div></div></div>';
 
+    // Nếu có lý do hủy
     if (o.status === 'cancelled' && o.cancel_reason) {
         html += '<div style="background:#fef2f2;border-left:4px solid #b91c1c;padding:0.85rem 1rem;margin-bottom:1.5rem;border-radius:6px;">';
         html += '<div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.1em;color:#991b1b;margin-bottom:0.35rem;font-weight:700;"><i class="ph ph-x-circle"></i> Lý do hủy</div>';
         html += '<div style="color:#7f1d1d;font-weight:600;">' + escapeHtml(o.cancel_reason) + '</div>';
-        if (o.cancelled_at_fmt) {
-            html += '<div style="font-size:0.78rem;color:#991b1b;margin-top:0.35rem;">Hủy lúc: ' + o.cancelled_at_fmt + '</div>';
-        }
         html += '</div>';
     }
 
+    // Danh sách sản phẩm
     html += '<div style="font-size:0.72rem;letter-spacing:0.1em;text-transform:uppercase;color:#8a8377;margin-bottom:0.6rem;font-weight:700;"><i class="ph ph-shopping-bag"></i> Sản phẩm (' + items.length + ')</div>';
     html += '<div style="border:1px solid #efeae0;border-radius:10px;overflow:hidden;">';
     html += '<table style="width:100%;border-collapse:collapse;font-size:0.88rem;">';
@@ -710,20 +749,36 @@ function renderOrderDetail(o, items) {
         html += '<td style="padding:0.7rem 0.9rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;">' + formatVnd(it.price * it.quantity) + '</td>';
         html += '</tr>';
     });
-
     html += '</tbody></table></div>';
 
+    // Phần tổng kết (Tính toán hiển thị)
     html += '<div style="margin-top:1.5rem;padding-top:1rem;border-top:2px solid #efeae0;">';
-    html += '<div style="display:flex;justify-content:space-between;margin-bottom:0.35rem;font-size:0.9rem;">';
-    html += '<span>Tạm tính</span><b>' + formatVnd(o.subtotal_products || o.total_amount) + '</b></div>';
-    if (parseFloat(o.discount_amount) > 0) {
-        html += '<div style="display:flex;justify-content:space-between;margin-bottom:0.35rem;font-size:0.9rem;color:#166534;">';
-        html += '<span>Giảm giá (' + escapeHtml(o.voucher_code || '') + ')</span>';
-        html += '<b>−' + formatVnd(o.discount_amount) + '</b></div>';
+    
+    if (isExchange) {
+        var diff = parseFloat(o.price_difference) || 0;
+        html += '<div style="display:flex;justify-content:space-between;margin-bottom:0.35rem;font-size:0.9rem;">';
+        html += '<span>Giá trị SP mới</span><b>' + formatVnd(o.subtotal_products) + '</b></div>';
+        
+        html += '<div style="display:flex;justify-content:space-between;margin-bottom:0.35rem;font-size:0.9rem;">';
+        html += '<span>Chênh lệch</span><b style="color:' + (diff > 0 ? '#15803d' : (diff < 0 ? '#b91c1c' : '#57534e')) + ';">' 
+             + (diff > 0 ? '+' : '') + formatVnd(diff) + '</b></div>';
+
+        html += '<div style="display:flex;justify-content:space-between;margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid #efeae0;font-size:1.1rem;">';
+        html += '<b>' + (diff > 0 ? 'KHÁCH CẦN TRẢ THÊM' : (diff < 0 ? 'SHOP CẦN HOÀN' : 'KHÔNG CHÊNH LỆCH')) + '</b>';
+        html += '<b style="color:' + (diff < 0 ? '#b91c1c' : '#a8461f') + ';font-family:\'IBM Plex Mono\',monospace;">' + formatVnd(Math.abs(diff)) + '</b></div>';
+    } else {
+        html += '<div style="display:flex;justify-content:space-between;margin-bottom:0.35rem;font-size:0.9rem;">';
+        html += '<span>Tạm tính</span><b>' + formatVnd(o.subtotal_products || o.total_amount) + '</b></div>';
+        if (parseFloat(o.discount_amount) > 0) {
+            html += '<div style="display:flex;justify-content:space-between;margin-bottom:0.35rem;font-size:0.9rem;color:#166534;">';
+            html += '<span>Giảm giá (' + escapeHtml(o.voucher_code || '') + ')</span>';
+            html += '<b>−' + formatVnd(o.discount_amount) + '</b></div>';
+        }
+        html += '<div style="display:flex;justify-content:space-between;margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid #efeae0;font-size:1.1rem;">';
+        html += '<b>TỔNG THANH TOÁN</b>';
+        html += '<b style="color:#a8461f;font-family:\'IBM Plex Mono\',monospace;">' + formatVnd(o.total_amount) + '</b></div>';
     }
-    html += '<div style="display:flex;justify-content:space-between;margin-top:0.75rem;padding-top:0.75rem;border-top:1px solid #efeae0;font-size:1.1rem;">';
-    html += '<b>TỔNG THANH TOÁN</b>';
-    html += '<b style="color:#a8461f;font-family:\'IBM Plex Mono\',monospace;">' + formatVnd(o.total_amount) + '</b></div></div>';
+    html += '</div>';
 
     document.getElementById('orderDetailContent').innerHTML = html;
 }
@@ -748,5 +803,9 @@ document.addEventListener('keydown', function (e) {
     if (orderModal.classList.contains('show')) closeOrderModal();
 });
 </script>
+
+<style>
+@keyframes spin { 100% { transform: rotate(360deg); } }
+</style>
 
 <?php include 'includes/admin_footer.php'; ?>

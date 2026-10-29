@@ -1,4 +1,5 @@
 <?php
+// File: admin/banners.php
 require_once '../includes/config.php';
 include 'includes/admin_header.php';
 
@@ -67,13 +68,17 @@ $posLabels = [
 ];
 ?>
 
+<style>
+    .btn-adm i { vertical-align: -2px; }
+</style>
+
 <div class="admin-page-head">
     <div>
         <h1>Banner quảng cáo</h1>
         <div class="subtitle"><?php echo count($banners); ?> banner</div>
     </div>
     <button type="button" class="btn-adm btn-adm--primary" onclick="openBannerModal()">
-        + Thêm banner
+        <i class="ph ph-plus"></i> Thêm banner
     </button>
 </div>
 
@@ -94,6 +99,7 @@ $posLabels = [
             $posInfo = $posLabels[$b['position']] ?? [$b['position'], 'adm-badge--gray'];
         ?>
             <div class="admin-card" style="padding:0;overflow:hidden;">
+                <!-- Đường dẫn ảnh: Lùi 1 cấp ra thư mục gốc -->
                 <img src="../<?php echo htmlspecialchars($b['image_url']); ?>"
                      style="width:100%;height:160px;object-fit:cover;background:#f1f5f9;"
                      onerror="this.src='https://via.placeholder.com/320x160?text=No+Image'">
@@ -104,8 +110,8 @@ $posLabels = [
                         <span class="adm-badge <?php echo $posInfo[1]; ?>"><?php echo $posInfo[0]; ?></span>
                     </div>
 
-                    <div style="font-size:0.75rem;color:var(--admin-text-muted);margin-bottom:0.35rem;">
-                        🔗 <?php echo htmlspecialchars($b['link'] ?: 'Không có'); ?>
+                    <div style="font-size:0.75rem;color:var(--admin-text-muted);margin-bottom:0.35rem;display:flex;align-items:center;gap:4px;">
+                        <i class="ph ph-link"></i> <?php echo htmlspecialchars($b['link'] ?: 'Không có'); ?>
                     </div>
 
                     <div style="margin-bottom:0.85rem;">
@@ -119,14 +125,14 @@ $posLabels = [
                     <div style="display:flex;gap:0.5rem;">
                         <button type="button" class="btn-adm btn-adm--edit" style="flex:1;justify-content:center;"
                                 onclick='editBanner(<?php echo json_encode($b, JSON_HEX_APOS | JSON_HEX_QUOT); ?>)'>
-                            Sửa
+                            <i class="ph ph-pencil-simple"></i> Sửa
                         </button>
                         <form method="POST" style="flex:1;" onsubmit="return confirmDelete('Xóa banner này?')">
                             <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="id" value="<?php echo (int)$b['id']; ?>">
                             <button type="submit" class="btn-adm btn-adm--delete" style="width:100%;justify-content:center;">
-                                Xóa
+                                <i class="ph ph-trash"></i> Xóa
                             </button>
                         </form>
                     </div>
@@ -139,7 +145,7 @@ $posLabels = [
 <!-- Modal -->
 <div class="adm-modal" id="bannerModal">
     <div class="adm-modal__box">
-        <button type="button" class="adm-modal__close" onclick="closeBannerModal()">×</button>
+        <button type="button" class="adm-modal__close" onclick="closeBannerModal()"><i class="ph ph-x"></i></button>
         <h2 class="adm-modal__title" id="bannerModalTitle">Thêm banner</h2>
 
         <form method="POST">
@@ -159,8 +165,23 @@ $posLabels = [
             </div>
 
             <div class="adm-form-group">
-                <label>Link khi bấm vào</label>
-                <input type="text" name="link" id="b_link" class="adm-input" placeholder="products.php">
+                <label>Đường dẫn khi bấm vào</label>
+                <!-- Sử dụng list để gợi ý các ID có sẵn -->
+                <input type="text" name="link" id="b_link" class="adm-input" list="linkOptions" placeholder="VD: #san-pham-moi hoặc products.php">
+                <datalist id="linkOptions">
+                    <option value="#giam-gia">Cuộn tới: Đang giảm giá</option>
+                    <option value="#combo-thu-dong">Cuộn tới: Combo thu đông</option>
+                    <option value="#ban-chay">Cuộn tới: Bán chạy nhất</option>
+                    <option value="#giam-kich-san">Cuộn tới: Giảm kịch sàn</option>
+                    <option value="#combo-thoi-trang">Cuộn tới: Combo đồ thời trang</option>
+                    <option value="#phong-cach-toi-gian">Cuộn tới: Phong cách tối giản</option>
+                    <option value="#khuyen-mai-mua-he">Cuộn tới: Khuyến mãi mùa hè</option>
+                    <option value="#san-pham-moi">Cuộn tới: Sản phẩm mới</option>
+                    <option value="products.php">Chuyển sang: Trang tất cả sản phẩm</option>
+                </datalist>
+                <div style="font-size:0.75rem;color:var(--admin-text-muted);margin-top:6px;line-height:1.5;">
+                    <i class="ph ph-info"></i> Nhập dấu <b>#</b> kèm ID (VD: <code>#san-pham-moi</code>) để tự động cuộn mượt xuống phần đó trên Trang chủ.
+                </div>
             </div>
 
             <div class="adm-row">
@@ -185,7 +206,7 @@ $posLabels = [
                 <button type="button" class="btn-adm btn-adm--ghost" style="flex:1;justify-content:center;padding:0.85rem"
                         onclick="closeBannerModal()">Hủy</button>
                 <button type="submit" class="btn-adm btn-adm--primary" style="flex:2;justify-content:center;padding:0.85rem">
-                    💾 Lưu banner
+                    <i class="ph ph-floppy-disk"></i> Lưu banner
                 </button>
             </div>
         </form>

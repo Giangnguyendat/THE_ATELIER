@@ -2,17 +2,17 @@
 require_once 'includes/config.php';
 
 /* ============================================================
-   TAB CONFIG
+   TAB CONFIG — Phosphor Icons
    ============================================================ */
 $tabs = [
-    'return'     => ['🔄', 'Chính sách đổi trả'],
-    'privacy'    => ['🔒', 'Chính sách bảo mật'],
-    'terms'      => ['📜', 'Điều khoản dịch vụ'],
-    'shipping'   => ['🚚', 'Vận chuyển'],
-    'payment'    => ['💳', 'Thanh toán'],
-    'size-guide' => ['📏', 'Hướng dẫn chọn size'],
-    'faq'        => ['❓', 'Câu hỏi thường gặp'],
-    'support'    => ['📨', 'Gửi yêu cầu hỗ trợ'], // ✅ Thêm mục này vào cuối
+    'return'     => ['<i class="ph ph-arrows-clockwise"></i>', 'Chính sách đổi trả'],
+    'privacy'    => ['<i class="ph ph-lock-key"></i>',         'Chính sách bảo mật'],
+    'terms'      => ['<i class="ph ph-scroll"></i>',           'Điều khoản dịch vụ'],
+    'shipping'   => ['<i class="ph ph-truck"></i>',            'Vận chuyển'],
+    'payment'    => ['<i class="ph ph-credit-card"></i>',      'Thanh toán'],
+    'size-guide' => ['<i class="ph ph-ruler"></i>',            'Hướng dẫn chọn size'],
+    'faq'        => ['<i class="ph ph-question"></i>',         'Câu hỏi thường gặp'],
+    'support'    => ['<i class="ph ph-paper-plane-tilt"></i>', 'Gửi yêu cầu hỗ trợ'],
 ];
 
 $activeTab = $_GET['tab'] ?? 'return';
@@ -29,12 +29,11 @@ $current = [
     'sections' => []
 ];
 
-// Chỉ lấy dữ liệu chính sách nếu KHÔNG PHẢI tab "support"
 if ($activeTab !== 'support') {
     try {
         $stmt = $pdo->query("SELECT * FROM footer_settings WHERE id = 1");
         $footerData = $stmt->fetch(PDO::FETCH_ASSOC);
-        
+
         $colName = 'policy_' . str_replace('-', '_', $activeTab);
         $dbContent = $footerData[$colName] ?? '';
     } catch (Exception $e) {}
@@ -42,7 +41,7 @@ if ($activeTab !== 'support') {
     if (!empty($dbContent)) {
         $current['sections'][] = [
             'type'  => 'text',
-            'title' => '', 
+            'title' => '',
             'items' => [$dbContent]
         ];
     } else {
@@ -77,9 +76,6 @@ if ($isLogged) {
 <?php include 'includes/header.php'; ?>
 
 <style>
-    /* ============================================================
-       THE ATELIER — SUPPORT PAGE (2-COLUMN LAYOUT)
-       ============================================================ */
     @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,400;1,9..144,500&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
 
     .sp-page {
@@ -89,7 +85,7 @@ if ($isLogged) {
         --c-stone:  #8a8377;
         --c-border: #e8e0d0;
         --c-white:  #fffdf9;
-        
+
         background: var(--c-ivory);
         color: var(--c-ink);
         font-family: 'Inter', -apple-system, sans-serif;
@@ -98,6 +94,9 @@ if ($isLogged) {
         min-height: 60vh;
         padding: 40px 0 80px;
     }
+
+    /* Phosphor icon base alignment */
+    .sp-page .ph { vertical-align: -0.125em; }
 
     .sp-wrap { max-width: 1140px; margin: 0 auto; padding: 0 20px; }
 
@@ -185,9 +184,15 @@ if ($isLogged) {
         border-left-color: var(--c-rust);
     }
 
-    .sp-tab__icon { font-size: 1.1rem; }
+    .sp-tab__icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1.1rem;
+        width: 20px;
+        flex-shrink: 0;
+    }
 
-    /* Đường phân cách cho mục Hỗ trợ */
     .sp-tab--support {
         margin-top: 8px;
         border-top: 1px dashed var(--c-border);
@@ -210,7 +215,7 @@ if ($isLogged) {
         color: #37423a;
         line-height: 1.8;
     }
-    
+
     .sp-prose > :first-child { margin-top: 0; }
     .sp-prose > :last-child { margin-bottom: 0; }
 
@@ -230,7 +235,7 @@ if ($isLogged) {
     .sp-prose p { margin-bottom: 1.2em; }
     .sp-prose strong, .sp-prose b { color: var(--c-ink); font-weight: 600; }
     .sp-prose a { color: var(--c-rust); text-decoration: underline; text-underline-offset: 3px; }
-    
+
     .sp-prose ul, .sp-prose ol { margin: 0 0 1.2em; padding-left: 1.5em; }
     .sp-prose li { margin-bottom: 0.6em; }
     .sp-prose li::marker { color: var(--c-rust); font-weight: bold; }
@@ -272,7 +277,7 @@ if ($isLogged) {
         font-style: italic;
     }
 
-    /* ============ FORM HỖ TRỢ (Nằm trong cột phải) ============ */
+    /* ============ FORM HỖ TRỢ ============ */
     .sp-form-box {
         background: #fdfbf7;
         border: 1px solid var(--c-border);
@@ -379,7 +384,11 @@ if ($isLogged) {
         min-height: 1em;
         font-family: 'IBM Plex Mono', monospace;
         font-weight: 600;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
     }
+    .sp-form-msg i { font-size: 1rem; }
     .sp-form-msg.is-success { color: #166534; }
     .sp-form-msg.is-error   { color: #b91c1c; }
     .sp-form-btn {
@@ -400,6 +409,7 @@ if ($isLogged) {
         transition: all 0.25s;
         box-shadow: 0 4px 16px rgba(168,70,31,0.25);
     }
+    .sp-form-btn i { font-size: 1rem; }
     .sp-form-btn:hover:not(:disabled) {
         background: #8f3a18;
         transform: translateY(-2px);
@@ -410,7 +420,7 @@ if ($isLogged) {
     /* ============ RESPONSIVE (Mobile) ============ */
     @media (max-width: 900px) {
         .sp-layout { grid-template-columns: 1fr; gap: 24px; }
-        
+
         .sp-sidebar {
             position: static;
             padding: 0;
@@ -418,10 +428,9 @@ if ($isLogged) {
             border: none;
             box-shadow: none;
         }
-        
+
         .sp-sidebar__title { display: none; }
 
-        /* Tabs dọc chuyển thành Grid 2 cột cho gọn trên mobile */
         .sp-tabs {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -444,15 +453,14 @@ if ($isLogged) {
             color: var(--c-white);
             border-color: var(--c-ink);
         }
-        
-        /* Xử lý nút Hỗ trợ trên mobile */
+
         .sp-tab--support {
             grid-column: span 2;
             margin-top: 4px;
             border-top: none;
             padding-top: 10px;
         }
-        
+
         .sp-main { padding: 24px 20px; }
         .sp-form-box { padding: 24px 20px; }
         .sp-form-grid { grid-template-columns: 1fr; }
@@ -481,8 +489,7 @@ if ($isLogged) {
             <aside class="sp-sidebar">
                 <div class="sp-sidebar__title">Danh mục hỗ trợ</div>
                 <nav class="sp-tabs">
-                    <?php foreach ($tabs as $key => $info): 
-                        // Thêm class đặc biệt cho tab 'support'
+                    <?php foreach ($tabs as $key => $info):
                         $isSupport = ($key === 'support');
                         $classList = 'sp-tab';
                         if ($key === $activeTab) $classList .= ' active';
@@ -498,7 +505,7 @@ if ($isLogged) {
 
             <!-- CỘT PHẢI: NỘI DUNG HOẶC FORM -->
             <div class="sp-main">
-                
+
                 <?php if ($activeTab === 'support'): ?>
                     <!-- ============ HIỂN THỊ FORM HỖ TRỢ ============ -->
                     <div class="sp-form-box">
@@ -555,7 +562,7 @@ if ($isLogged) {
                             <div class="sp-form-footer">
                                 <div class="sp-form-msg" id="spFormMsg"></div>
                                 <button type="submit" class="sp-form-btn" id="spSubmitBtn">
-                                    📨 Gửi yêu cầu
+                                    <i class="ph ph-paper-plane-tilt"></i> Gửi yêu cầu
                                 </button>
                             </div>
                         </form>
@@ -563,7 +570,7 @@ if ($isLogged) {
 
                 <?php else: ?>
                     <!-- ============ HIỂN THỊ CHÍNH SÁCH ============ -->
-                    
+
                     <?php if (!empty($current['intro'])): ?>
                         <p style="font-size:1.05rem; color:var(--c-ink); margin-bottom:30px; font-style:italic;">
                             <?php echo htmlspecialchars($current['intro']); ?>
@@ -574,14 +581,14 @@ if ($isLogged) {
                         <?php if ($sec['type'] === 'text'): ?>
                             <div class="sp-prose">
                                 <?php foreach ($sec['items'] as $li): ?>
-                                    <?php echo $li; /* Render HTML từ Database */ ?>
+                                    <?php echo $li; ?>
                                 <?php endforeach; ?>
                             </div>
                         <?php endif; ?>
                     <?php endforeach; ?>
 
                 <?php endif; ?>
-                
+
             </div>
 
         </div>
@@ -596,10 +603,16 @@ if ($isLogged) {
     var msgEl = document.getElementById('spFormMsg');
     var btn   = document.getElementById('spSubmitBtn');
 
+    // Icon templates (Phosphor)
+    var ICON_SEND      = '<i class="ph ph-paper-plane-tilt"></i>';
+    var ICON_LOADING   = '<i class="ph ph-hourglass"></i>';
+    var ICON_SUCCESS   = '<i class="ph ph-check-circle"></i>';
+    var ICON_WARNING   = '<i class="ph ph-warning"></i>';
+
     form.addEventListener('submit', function (e) {
         e.preventDefault();
         msgEl.className = 'sp-form-msg';
-        msgEl.textContent = '';
+        msgEl.innerHTML = '';
 
         var name    = document.getElementById('spName').value.trim();
         var email   = document.getElementById('spEmail').value.trim();
@@ -613,8 +626,8 @@ if ($isLogged) {
         if (message.length < 10) { showErr('Nội dung cần ít nhất 10 ký tự.'); return; }
 
         btn.disabled = true;
-        var oldTxt = btn.textContent;
-        btn.textContent = '⏳ Đang gửi...';
+        var oldHTML = btn.innerHTML;
+        btn.innerHTML = ICON_LOADING + ' Đang gửi...';
 
         var fd = new FormData(form);
 
@@ -622,7 +635,8 @@ if ($isLogged) {
             .then(function (r) { return r.json(); })
             .then(function (d) {
                 if (d.ok) {
-                    msgEl.textContent = '✓ ' + (d.msg || 'Đã gửi yêu cầu thành công!');
+                    msgEl.innerHTML = ICON_SUCCESS;
+                    msgEl.appendChild(document.createTextNode(' ' + (d.msg || 'Đã gửi yêu cầu thành công!')));
                     msgEl.classList.add('is-success');
                     form.reset();
                     if (<?php echo $isLogged ? 'true' : 'false'; ?>) {
@@ -632,6 +646,7 @@ if ($isLogged) {
                     }
                     setTimeout(function () {
                         msgEl.className = 'sp-form-msg';
+                        msgEl.innerHTML = '';
                     }, 6000);
                 } else {
                     showErr(d.msg || 'Có lỗi xảy ra.');
@@ -642,12 +657,13 @@ if ($isLogged) {
             })
             .finally(function () {
                 btn.disabled = false;
-                btn.textContent = oldTxt;
+                btn.innerHTML = oldHTML;
             });
     });
 
     function showErr(msg) {
-        msgEl.textContent = '⚠ ' + msg;
+        msgEl.innerHTML = ICON_WARNING;
+        msgEl.appendChild(document.createTextNode(' ' + msg));
         msgEl.classList.add('is-error');
     }
 })();

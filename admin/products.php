@@ -11,9 +11,10 @@
         function productsBackUrl(): string {
             $p = [];
             if (!empty($_GET['q']))    $p['q']    = $_GET['q'];
-            if (!empty($_GET['cat']))  $p['cat']  = (int)$_GET['cat'];
+            if (isset($_GET['cat']) && $_GET['cat'] !== '') $p['cat'] = (int)$_GET['cat'];
             if (!empty($_GET['sale'])) $p['sale'] = (int)$_GET['sale'];
             if (!empty($_GET['stock_status'])) $p['stock_status'] = $_GET['stock_status'];
+            if (!empty($_GET['collection'])) $p['collection'] = $_GET['collection'];
             return 'products.php' . ($p ? '?' . http_build_query($p) : '');
         }
     }
@@ -34,7 +35,7 @@
                 $pdo->prepare("DELETE FROM products WHERE id = ?")->execute([$id]);
                 $_SESSION['admin_flash'] = ['type' => 'success', 'msg' => "Đã xóa sản phẩm #$id"];
             }
-            header('Location: products.php'); exit;
+            header('Location: ' . productsBackUrl()); exit;
         }
 
         /* TẮT TẤT CẢ GIẢM GIÁ (toàn bộ DB) */
@@ -128,32 +129,66 @@
                 }
                 $_SESSION['admin_flash'] = ['type' => 'success', 'msg' => 'Đã thêm sản phẩm mới'];
             }
-            header('Location: products.php'); exit;
+            header('Location: ' . productsBackUrl()); exit;
         }
     }
 
     /* ============ LẤY DỮ LIỆU ============ */
     $search       = trim($_GET['q'] ?? '');
-    $category     = (int)($_GET['cat'] ?? 0);
+    $category     = isset($_GET['cat']) ? (int)$_GET['cat'] : 0;
     $sale         = (int)($_GET['sale'] ?? 0);   // 0 = tất cả, 1 = đang giảm giá
     $stock_status = $_GET['stock_status'] ?? ''; // '', 'low', 'old'
+    $collection   = $_GET['collection'] ?? '';   // Lọc theo khối trang chủ
 
     $where = []; $params = [];
     if ($search !== '') {
         $where[] = "p.name LIKE ?";
         $params[] = '%' . $search . '%';
     }
-    if ($category > 0) {
+    
+    // Bộ lọc danh mục (bao gồm cả Chưa phân loại)
+    if ($category === -1) {
+        $where[] = "p.category_id IS NULL";
+    } elseif ($category > 0) {
         $where[] = "p.category_id = ?";
         $params[] = $category;
     }
-    
+
+    // Bộ lọc khối trang chủ
+    if ($collection !== '') {
+        switch ($collection) {
+            case 'giam-gia':
+                $where[] = "p.discount_percent > 0 AND p.id < 100";
+                break;
+            case 'combo-thu-dong':
+                $where[] = "p.category_id = (SELECT id FROM categories WHERE slug='combo' LIMIT 1) AND p.id < 100";
+                break;
+            case 'ban-chay':
+                $where[] = "p.sold_count > 0";
+                break;
+            case 'giam-kich-san':
+                $where[] = "p.id BETWEEN 100 AND 104";
+                break;
+            case 'combo-thoi-trang':
+                $where[] = "p.id BETWEEN 105 AND 109";
+                break;
+            case 'phong-cach-toi-gian':
+                $where[] = "p.id BETWEEN 110 AND 114";
+                break;
+            case 'khuyen-mai-mua-he':
+                $where[] = "p.id BETWEEN 115 AND 119";
+                break;
+            case 'san-pham-moi':
+                $where[] = "p.id BETWEEN 120 AND 124";
+                break;
+        }
+    }
+
     // Bộ lọc tồn kho
     if ($stock_status === 'old') {
         $where[] = "p.created_at <= DATE_SUB(NOW(), INTERVAL 90 DAY)";
         $where[] = "(SELECT COALESCE(SUM(stock), 0) FROM product_sizes WHERE product_id = p.id) > 0";
     } elseif ($stock_status === 'low') {
-        // Tìm những SP có ít nhất 1 size tồn kho từ 1 đến 5
         $where[] = "EXISTS (
             SELECT 1 FROM product_sizes ps2 
             WHERE ps2.product_id = p.id AND ps2.stock > 0 AND ps2.stock <= 5
@@ -201,8 +236,9 @@
         }));
     }
 
-    /* Danh mục */
+    /* Danh mục & Khối trang chủ */
     $categories = $pdo->query("SELECT id, name FROM categories ORDER BY name")->fetchAll(PDO::FETCH_ASSOC);
+    $sections = $pdo->query("SELECT section_key, title FROM homepage_sections ORDER BY display_order ASC")->fetchAll(PDO::FETCH_ASSOC);
 
     /* Helper lấy stock đầy đủ */
     if (!function_exists('stocksOf')) {
@@ -231,12 +267,12 @@
                     <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                     <input type="hidden" name="action" value="clear_all_discounts">
                     <button type="submit" class="btn-adm btn-adm--ghost" style="color:#c2410c;border-color:#c2410c;" title="Đặt discount_percent = 0 cho tất cả SP">
-                        🚫 Tắt tất cả giảm giá riêng
+                        <i class="ph ph-prohibit"></i> Tắt tất cả giảm giá riêng
                     </button>
                 </form>
             <?php endif; ?>
             <button type="button" class="btn-adm btn-adm--primary" onclick="openProductModal()">
-                + Thêm sản phẩm mới
+                <i class="ph ph-plus"></i> Thêm sản phẩm mới
             </button>
         </div>
     </div>
@@ -256,9 +292,23 @@
                 </label>
                 <select name="cat" class="adm-select">
                     <option value="0">Tất cả</option>
+                    <option value="-1" <?php echo $category === -1 ? 'selected' : ''; ?>>— Chưa phân loại —</option>
                     <?php foreach ($categories as $c): ?>
                         <option value="<?php echo (int)$c['id']; ?>" <?php echo $category === (int)$c['id'] ? 'selected' : ''; ?>>
                             <?php echo htmlspecialchars($c['name']); ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+            </div>
+            <div style="flex:1;min-width:150px;">
+                <label style="display:block;font-size:0.7rem;text-transform:uppercase;color:var(--admin-text-muted);margin-bottom:0.35rem;letter-spacing:0.08em;">
+                    Khối trang chủ
+                </label>
+                <select name="collection" class="adm-select">
+                    <option value="">Tất cả</option>
+                    <?php foreach ($sections as $so): ?>
+                        <option value="<?php echo htmlspecialchars($so['section_key']); ?>" <?php echo $collection === $so['section_key'] ? 'selected' : ''; ?>>
+                            <?php echo htmlspecialchars($so['title']); ?>
                         </option>
                     <?php endforeach; ?>
                 </select>
@@ -272,7 +322,6 @@
                     <option value="1" <?php echo $sale === 1 ? 'selected' : ''; ?>>Đang giảm giá</option>
                 </select>
             </div>
-            <!-- BỘ LỌC TÌNH TRẠNG KHO MỚI -->
             <div style="flex:1;min-width:150px;">
                 <label style="display:block;font-size:0.7rem;text-transform:uppercase;color:var(--admin-text-muted);margin-bottom:0.35rem;letter-spacing:0.08em;">
                     Tình trạng kho
@@ -280,11 +329,11 @@
                 <select name="stock_status" class="adm-select">
                     <option value="">Tất cả</option>
                     <option value="low" <?php echo $stock_status === 'low' ? 'selected' : ''; ?>>Có size sắp hết (1-5)</option>
-                    <option value="old" <?php echo $stock_status === 'old' ? 'selected' : ''; ?>>⏳ Tồn kho lâu (>90 ngày)</option>
+                    <option value="old" <?php echo $stock_status === 'old' ? 'selected' : ''; ?>>Tồn kho lâu (>90 ngày)</option>
                 </select>
             </div>
             <button type="submit" class="btn-adm btn-adm--primary">Lọc</button>
-            <?php if ($search !== '' || $category > 0 || $sale > 0 || $stock_status !== ''): ?>
+            <?php if ($search !== '' || $category !== 0 || $sale > 0 || $stock_status !== '' || $collection !== ''): ?>
                 <a href="products.php" class="btn-adm btn-adm--ghost">Xóa lọc</a>
             <?php endif; ?>
         </form>
@@ -303,7 +352,7 @@
             <input type="hidden" name="action" value="clear_selected_discounts">
             <div id="bulkIds"></div>
             <button type="submit" class="btn-adm btn-adm--ghost" id="bulkBtn" disabled style="color:#c2410c;border-color:#c2410c;opacity:0.55;cursor:not-allowed;">
-                🚫 Tắt giảm giá riêng đã chọn
+                <i class="ph ph-prohibit"></i> Tắt giảm giá riêng đã chọn
             </button>
         </form>
     </div>
@@ -339,7 +388,7 @@
 
             .apd-image__overlay { position: absolute; inset: 0; background: rgba(28,27,25,0.5); display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.25s; }
             .apd-card:hover .apd-image__overlay { opacity: 1; }
-            .apd-image__overlay span { background: #fffdf9; color: #1c1b19; padding: 0.5rem 1rem; border-radius: 20px; font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+            .apd-image__overlay span { background: #fffdf9; color: #1c1b19; padding: 0.5rem 1rem; border-radius: 20px; font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; display: inline-flex; align-items: center; gap: 6px; }
 
             .apd-info { padding: 0.9rem 1rem 0.75rem; flex: 1; display: flex; flex-direction: column; gap: 0.35rem; }
             .apd-name { font-family: 'Inter', sans-serif; font-size: 0.92rem; font-weight: 600; line-height: 1.35; color: #1c1b19; margin: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; transition: color 0.2s; }
@@ -362,7 +411,7 @@
             .apd-detail-meta .meta-row b { color: #8a8377; min-width: 110px; font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; }
 
             .apd-detail-section { margin-bottom: 1.5rem; }
-            .apd-detail-section__title { font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #8a8377; margin: 0 0 0.75rem; }
+            .apd-detail-section__title { font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #8a8377; margin: 0 0 0.75rem; display: flex; align-items: center; gap: 6px; }
 
             .apd-stock-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.6rem; }
             .apd-stock-cell { background: #f8f9fa; border: 1px solid #e8e0d0; border-radius: 6px; padding: 0.75rem 0.5rem; text-align: center; }
@@ -374,8 +423,7 @@
 
             .apd-desc { background: #f8f9fa; padding: 0.85rem 1rem; border-radius: 6px; font-size: 0.88rem; line-height: 1.6; color: #4b5563; white-space: pre-wrap; }
             
-            /* CSS BADGE TỒN KHO LÂU */
-            .apd-old-stock { display:inline-block; margin-top: 4px; font-size: 0.7rem; color: #c2410c; background: #fff7ed; padding: 2px 6px; border-radius: 4px; border: 1px solid #fed7aa; font-weight: 600; }
+            .apd-old-stock { display:inline-flex; align-items:center; gap:4px; margin-top: 4px; font-size: 0.7rem; color: #c2410c; background: #fff7ed; padding: 2px 6px; border-radius: 4px; border: 1px solid #fed7aa; font-weight: 600; }
 
             @media (max-width: 768px) {
                 .apd-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
@@ -416,15 +464,15 @@
 
                 if ($total <= 0) {
                     $statusCls = 'apd-status--out';
-                    $statusTxt = '⛔ Hết hàng';
+                    $statusTxt = '<i class="ph ph-x-circle"></i> Hết hàng';
                 } elseif (!empty($lowSizes)) {
                     $statusCls = 'apd-status--low';
-                    $displaySizes = array_slice($lowSizes, 0, 2); // Chỉ hiện tối đa 2 size cho gọn
+                    $displaySizes = array_slice($lowSizes, 0, 2);
                     $more = count($lowSizes) > 2 ? '+' : '';
-                    $statusTxt = '⚠️ Sắp hết size ' . implode(', ', $displaySizes) . $more;
+                    $statusTxt = '<i class="ph ph-warning"></i> Sắp hết size ' . implode(', ', $displaySizes) . $more;
                 } else {
                     $statusCls = 'apd-status--in';
-                    $statusTxt = '✓ Còn hàng';
+                    $statusTxt = '<i class="ph ph-check-circle"></i> Còn hàng';
                 }
 
                 // KIỂM TRA TỒN KHO LÂU NGÀY (> 90 ngày và còn hàng)
@@ -475,7 +523,7 @@
                         <img src="../<?php echo htmlspecialchars($p['image_url']); ?>"
                             alt="<?php echo htmlspecialchars($p['name']); ?>"
                             onerror="this.src='https://via.placeholder.com/300x400?text=No+Image'">
-                        <div class="apd-image__overlay"><span>👁 Xem chi tiết</span></div>
+                        <div class="apd-image__overlay"><span><i class="ph ph-eye"></i> Xem chi tiết</span></div>
                     </div>
 
                     <!-- Tên + giá -->
@@ -486,7 +534,7 @@
                         
                         <?php if ($isOldStock): ?>
                             <div class="apd-old-stock" title="Sản phẩm đã nhập kho hơn 90 ngày nhưng vẫn chưa bán hết">
-                                ⏳ Tồn > <?php echo $daysInStock; ?> ngày
+                                <i class="ph ph-clock"></i> Tồn > <?php echo $daysInStock; ?> ngày
                             </div>
                         <?php endif; ?>
 
@@ -527,7 +575,7 @@
     <!-- ============ MODAL XEM CHI TIẾT ============ -->
     <div class="adm-modal apd-detail-modal" id="detailModal">
         <div class="adm-modal__box">
-            <button type="button" class="adm-modal__close" onclick="closeDetailModal()">×</button>
+            <button type="button" class="adm-modal__close" onclick="closeDetailModal()">&times;</button>
             <h2 class="adm-modal__title" id="detailModalTitle">Chi tiết sản phẩm</h2>
             <div id="detailContent"></div>
         </div>
@@ -536,7 +584,7 @@
     <!-- ============ MODAL SỬA/THÊM ============ -->
     <div class="adm-modal" id="productModal">
         <div class="adm-modal__box" style="max-width:680px;">
-            <button type="button" class="adm-modal__close" onclick="closeProductModal()">×</button>
+            <button type="button" class="adm-modal__close" onclick="closeProductModal()">&times;</button>
             <h2 class="adm-modal__title" id="productModalTitle">Thêm sản phẩm</h2>
 
             <form method="POST">
@@ -608,8 +656,8 @@
 
                 <!-- Tồn kho theo size -->
                 <div style="background:#f2ece0;padding:1rem;border-radius:6px;margin:1rem 0;">
-                    <label style="display:block;font-family:'IBM Plex Mono',monospace;font-size:0.72rem; font-weight:700;text-transform:uppercase;letter-spacing:0.08em; color:#8a8377;margin-bottom:0.75rem;">
-                        📦 Tồn kho theo size
+                    <label style="display:flex;align-items:center;gap:6px;font-family:'IBM Plex Mono',monospace;font-size:0.72rem; font-weight:700;text-transform:uppercase;letter-spacing:0.08em; color:#8a8377;margin-bottom:0.75rem;">
+                        <i class="ph ph-package"></i> Tồn kho theo size
                     </label>
                     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:0.5rem;">
                         <?php foreach (ALL_SIZES as $sz): ?>
@@ -631,7 +679,7 @@
                 <div style="display:flex;gap:0.75rem;margin-top:1.5rem;">
                     <button type="button" class="btn-adm btn-adm--ghost" style="flex:1;justify-content:center;padding:0.85rem" onclick="closeProductModal()">Hủy</button>
                     <button type="submit" class="btn-adm btn-adm--primary" style="flex:2;justify-content:center;padding:0.85rem">
-                        💾 Lưu sản phẩm
+                        <i class="ph ph-floppy-disk"></i> Lưu sản phẩm
                     </button>
                 </div>
             </form>
@@ -649,11 +697,11 @@
 
         var statusInfo;
         if (p.total_stock <= 0) {
-            statusInfo = { text: '⛔ Hết hàng', color: '#b91c1c', bg: '#fee2e2' };
+            statusInfo = { text: '<i class="ph ph-x-circle"></i> Hết hàng', color: '#b91c1c', bg: '#fee2e2' };
         } else if (p.low_sizes && p.low_sizes.length > 0) {
-            statusInfo = { text: '⚠️ Sắp hết size: ' + p.low_sizes.join(', '), color: '#92400e', bg: '#fef3c7' };
+            statusInfo = { text: '<i class="ph ph-warning"></i> Sắp hết size: ' + p.low_sizes.join(', '), color: '#92400e', bg: '#fef3c7' };
         } else {
-            statusInfo = { text: '✓ Còn hàng', color: '#166534', bg: '#dcfce7' };
+            statusInfo = { text: '<i class="ph ph-check-circle"></i> Còn hàng', color: '#166534', bg: '#dcfce7' };
         }
 
         var genderLabel = { male: 'Nam', female: 'Nữ', unisex: 'Unisex' }[p.gender] || 'Unisex';
@@ -668,7 +716,7 @@
         html += '<div class="apd-detail-meta">';
         html += '<h3>' + escapeHtml(p.name) + '</h3>';
         html += '<div style="margin-bottom:0.75rem;"><span style="background:' + statusInfo.bg + ';color:' + statusInfo.color
-            + ';padding:4px 10px;border-radius:12px;font-size:0.75rem;font-weight:600;">' + statusInfo.text + '</span></div>';
+            + ';padding:4px 10px;border-radius:12px;font-size:0.75rem;font-weight:600;display:inline-flex;align-items:center;gap:4px;">' + statusInfo.text + '</span></div>';
 
         html += '<div class="meta-row"><b>Danh mục</b><span>' + escapeHtml(p.category) + '</span></div>';
         html += '<div class="meta-row"><b>Phân loại</b><span>' + escapeHtml(p.product_type || '—') + '</span></div>';
@@ -680,7 +728,7 @@
 
         /* GIÁ */
         html += '<div class="apd-detail-section">';
-        html += '<h4 class="apd-detail-section__title">💰 Giá cả</h4>';
+        html += '<h4 class="apd-detail-section__title"><i class="ph ph-currency-circle-dollar"></i> Giá cả</h4>';
         html += '<div class="apd-stock-grid" style="grid-template-columns:repeat(4,1fr);">';
 
         html += '<div class="apd-stock-cell"><span class="size">Giá nhập</span><span class="qty" style="color:#8a8377;">'
@@ -699,12 +747,12 @@
 
         // Thêm thông tin nguồn giảm giá
         if (p.discount_source === 'event') {
-            html += '<div style="margin-top:0.75rem;font-size:0.85rem;color:#166534;background:#dcfce7;padding:0.5rem 0.75rem;border-radius:6px;">';
-            html += '🎉 Đang áp dụng sự kiện: <b>' + escapeHtml(p.event_name) + '</b>';
+            html += '<div style="margin-top:0.75rem;font-size:0.85rem;color:#166534;background:#dcfce7;padding:0.5rem 0.75rem;border-radius:6px;display:flex;align-items:center;gap:6px;">';
+            html += '<i class="ph ph-confetti"></i> Đang áp dụng sự kiện: <b>' + escapeHtml(p.event_name) + '</b>';
             html += '</div>';
         } else if (p.discount_source === 'product') {
-            html += '<div style="margin-top:0.75rem;font-size:0.85rem;color:#c2410c;background:#fff7ed;padding:0.5rem 0.75rem;border-radius:6px;">';
-            html += '🏷️ Đang áp dụng giảm giá riêng của sản phẩm';
+            html += '<div style="margin-top:0.75rem;font-size:0.85rem;color:#c2410c;background:#fff7ed;padding:0.5rem 0.75rem;border-radius:6px;display:flex;align-items:center;gap:6px;">';
+            html += '<i class="ph ph-tag"></i> Đang áp dụng giảm giá riêng của sản phẩm';
             html += '</div>';
         }
 
@@ -716,7 +764,7 @@
 
         /* TỒN KHO */
         html += '<div class="apd-detail-section">';
-        html += '<h4 class="apd-detail-section__title">📦 Tồn kho theo size</h4>';
+        html += '<h4 class="apd-detail-section__title"><i class="ph ph-package"></i> Tồn kho theo size</h4>';
         html += '<div class="apd-stock-grid">';
         ['S','M','L','XL','2XL'].forEach(function (sz) {
             var qty = p.stocks[sz] || 0;
@@ -735,7 +783,7 @@
         /* MÔ TẢ */
         if (p.description) {
             html += '<div class="apd-detail-section">';
-            html += '<h4 class="apd-detail-section__title">📝 Mô tả</h4>';
+            html += '<h4 class="apd-detail-section__title"><i class="ph ph-note-pencil"></i> Mô tả</h4>';
             html += '<div class="apd-desc">' + escapeHtml(p.description) + '</div>';
             html += '</div>';
         }

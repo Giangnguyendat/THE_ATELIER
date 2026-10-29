@@ -48,8 +48,8 @@ $stmt = $pdo->prepare("
     ORDER BY 
         CASE r.status 
             WHEN 'pending' THEN 1
-            WHEN 'refunding' THEN 2
-            WHEN 'approved' THEN 3
+            WHEN 'approved' THEN 2
+            WHEN 'refunding' THEN 3
             WHEN 'refunded' THEN 4
             WHEN 'rejected' THEN 5
             ELSE 6
@@ -81,7 +81,7 @@ foreach ($countStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
 }
 $totalAll       = array_sum($counts);
 $totalPending   = $counts['pending'];
-$totalRefunding = $counts['approved'] + $counts['refunding'];
+$totalApproved  = $counts['approved'] + $counts['refunding']; // Đang giao hàng / Đang xử lý
 $totalRefunded  = $counts['refunded'];
 $totalRejected  = $counts['rejected'];
 
@@ -94,31 +94,21 @@ $adminHasPin  = !empty($adminPinHash);
 
 /* ============ STATUS MAP ============ */
 $returnStatusMap = [
-    'pending'   => ['Chờ duyệt',    'adm-badge--orange'],
-    'approved'  => ['Đã duyệt',     'adm-badge--blue'],
-    'refunding' => ['Đang hoàn tiền','adm-badge--blue'],
-    'refunded'  => ['Đã hoàn tiền', 'adm-badge--green'],
-    'rejected'  => ['Đã từ chối',   'adm-badge--red'],
-    'cancelled' => ['Đã hủy',       'adm-badge--gray'],
+    'pending'   => ['Chờ duyệt',       'adm-badge--orange'],
+    'approved'  => ['Đang giao hàng',  'adm-badge--blue'], // Đã duyệt, chờ hàng về
+    'refunding' => ['Đang xử lý',      'adm-badge--blue'], 
+    'refunded'  => ['Đã hoàn tiền',    'adm-badge--green'],
+    'rejected'  => ['Đã từ chối',      'adm-badge--red'],
+    'cancelled' => ['Đã hủy',          'adm-badge--gray'],
 ];
 
-// THAY EMOJI BẰNG ICON PHOSPHOR
 $refundMethodMap = [
     'wallet' => '<i class="ph ph-wallet"></i> Ví Atelier Pay',
     'bank'   => '<i class="ph ph-bank"></i> Chuyển khoản',
 ];
-
-$payMap = [
-    'cod'    => '<i class="ph ph-money"></i> COD',
-    'bank'   => '<i class="ph ph-bank"></i> Chuyển khoản',
-    'card'   => '<i class="ph ph-credit-card"></i> Thẻ',
-    'wallet' => '<i class="ph ph-wallet"></i> Atelier Pay',
-];
 ?>
 
-<!-- ============================================================
-     ADMIN RETURNS
-     ============================================================ -->
+<!-- CSS (Giữ nguyên) -->
 <style>
     .adm-returns {
         --c-primary:       #a8461f;
@@ -136,292 +126,80 @@ $payMap = [
         --r-md: 12px;
         --r-lg: 16px;
     }
-
-    /* HEAD */
-    .adm-returns .admin-page-head {
-        display: flex; align-items: flex-end; justify-content: space-between;
-        margin-bottom: 1.5rem; padding-bottom: 1.1rem;
-        border-bottom: 1px solid var(--c-border);
-        gap: 1rem; flex-wrap: wrap;
-    }
-    .adm-returns .admin-page-head h1 {
-        font-family: 'Playfair Display', Georgia, serif;
-        font-size: 2rem; margin: 0; color: var(--c-text);
-        letter-spacing: -0.015em; line-height: 1.1;
-    }
-    .adm-returns .admin-page-head .subtitle {
-        font-size: 0.85rem; color: var(--c-text-muted); margin-top: 0.4rem;
-    }
-    .adm-returns .admin-page-head .subtitle b {
-        color: var(--c-primary); font-family: 'IBM Plex Mono', monospace;
-    }
-
-    /* STATS */
-    .adm-returns .adm-stats {
-        display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-        gap: 0.9rem; margin-bottom: 1.5rem;
-    }
-    .adm-returns .adm-stat-card {
-        position: relative; display: flex; align-items: center; gap: 0.9rem;
-        padding: 1.1rem 1.2rem; background: var(--c-card);
-        border: 1px solid var(--c-border); border-radius: var(--r-md);
-        text-decoration: none; color: inherit; overflow: hidden;
-        transition: all 0.22s; box-shadow: var(--c-shadow-sm);
-    }
-    .adm-returns .adm-stat-card:hover {
-        transform: translateY(-3px); box-shadow: var(--c-shadow-md);
-        border-color: var(--c-border-strong);
-    }
-    .adm-returns .adm-stat-card--active {
-        border-color: var(--c-primary);
-        background: linear-gradient(135deg, #fffaf5 0%, #ffffff 70%);
-        box-shadow: 0 0 0 3px rgba(168, 70, 31, 0.10), var(--c-shadow-md);
-    }
-    .adm-returns .adm-stat-icon {
-        width: 48px; height: 48px; border-radius: var(--r-md);
-        display: flex; align-items: center; justify-content: center;
-        font-size: 1.5rem; flex-shrink: 0;
-    }
+    .adm-returns .admin-page-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 1.5rem; padding-bottom: 1.1rem; border-bottom: 1px solid var(--c-border); gap: 1rem; flex-wrap: wrap; }
+    .adm-returns .admin-page-head h1 { font-family: 'Playfair Display', Georgia, serif; font-size: 2rem; margin: 0; color: var(--c-text); letter-spacing: -0.015em; line-height: 1.1; }
+    .adm-returns .admin-page-head .subtitle { font-size: 0.85rem; color: var(--c-text-muted); margin-top: 0.4rem; }
+    .adm-returns .admin-page-head .subtitle b { color: var(--c-primary); font-family: 'IBM Plex Mono', monospace; }
+    .adm-returns .adm-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.9rem; margin-bottom: 1.5rem; }
+    .adm-returns .adm-stat-card { position: relative; display: flex; align-items: center; gap: 0.9rem; padding: 1.1rem 1.2rem; background: var(--c-card); border: 1px solid var(--c-border); border-radius: var(--r-md); text-decoration: none; color: inherit; overflow: hidden; transition: all 0.22s; box-shadow: var(--c-shadow-sm); }
+    .adm-returns .adm-stat-card:hover { transform: translateY(-3px); box-shadow: var(--c-shadow-md); border-color: var(--c-border-strong); }
+    .adm-returns .adm-stat-card--active { border-color: var(--c-primary); background: linear-gradient(135deg, #fffaf5 0%, #ffffff 70%); box-shadow: 0 0 0 3px rgba(168, 70, 31, 0.10), var(--c-shadow-md); }
+    .adm-returns .adm-stat-icon { width: 48px; height: 48px; border-radius: var(--r-md); display: flex; align-items: center; justify-content: center; font-size: 1.5rem; flex-shrink: 0; }
     .adm-returns .adm-stat-body { display: flex; flex-direction: column; line-height: 1.15; min-width: 0; }
-    .adm-returns .adm-stat-value {
-        font-size: 1.65rem; font-weight: 700;
-        font-family: 'IBM Plex Mono', monospace;
-        color: var(--c-text); letter-spacing: -0.02em;
-    }
-    .adm-returns .adm-stat-label {
-        font-size: 0.72rem; color: var(--c-text-muted); margin-top: 3px;
-        text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
-        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    }
-
-    /* FILTER */
-    .adm-returns .adm-filter-bar {
-        background: var(--c-card); border: 1px solid var(--c-border);
-        border-radius: var(--r-md); padding: 1.1rem 1.25rem;
-        margin-bottom: 1.25rem; box-shadow: var(--c-shadow-sm);
-    }
-    .adm-returns .adm-filter-form {
-        display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end;
-    }
+    .adm-returns .adm-stat-value { font-size: 1.65rem; font-weight: 700; font-family: 'IBM Plex Mono', monospace; color: var(--c-text); letter-spacing: -0.02em; }
+    .adm-returns .adm-stat-label { font-size: 0.72rem; color: var(--c-text-muted); margin-top: 3px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .adm-returns .adm-filter-bar { background: var(--c-card); border: 1px solid var(--c-border); border-radius: var(--r-md); padding: 1.1rem 1.25rem; margin-bottom: 1.25rem; box-shadow: var(--c-shadow-sm); }
+    .adm-returns .adm-filter-form { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; }
     .adm-returns .adm-filter-field { display: flex; flex-direction: column; min-width: 0; }
     .adm-returns .adm-filter-field--search { flex: 2 1 260px; }
     .adm-returns .adm-filter-field--status { flex: 1 1 190px; }
-    .adm-returns .adm-filter-label {
-        display: block; font-size: 0.68rem; font-weight: 700;
-        text-transform: uppercase; letter-spacing: 0.08em;
-        color: var(--c-text-muted); margin-bottom: 0.45rem;
-    }
-    .adm-returns .adm-input,
-    .adm-returns .adm-select {
-        width: 100%; padding: 0.65rem 0.85rem;
-        font-size: 0.88rem; font-family: inherit; color: var(--c-text);
-        background: #fbf9f5; border: 1px solid var(--c-border);
-        border-radius: var(--r-sm); outline: none;
-        transition: all 0.15s ease;
-    }
-    .adm-returns .adm-input:focus,
-    .adm-returns .adm-select:focus {
-        border-color: var(--c-primary); background: #ffffff;
-        box-shadow: 0 0 0 3px rgba(168, 70, 31, 0.10);
-    }
+    .adm-returns .adm-filter-label { display: block; font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--c-text-muted); margin-bottom: 0.45rem; }
+    .adm-returns .adm-input, .adm-returns .adm-select { width: 100%; padding: 0.65rem 0.85rem; font-size: 0.88rem; font-family: inherit; color: var(--c-text); background: #fbf9f5; border: 1px solid var(--c-border); border-radius: var(--r-sm); outline: none; transition: all 0.15s ease; }
+    .adm-returns .adm-input:focus, .adm-returns .adm-select:focus { border-color: var(--c-primary); background: #ffffff; box-shadow: 0 0 0 3px rgba(168, 70, 31, 0.10); }
     .adm-returns .adm-filter-actions { display: flex; gap: 0.5rem; align-items: center; }
-
-    /* BUTTONS */
-    .adm-returns .btn-adm {
-        display: inline-flex; align-items: center; justify-content: center;
-        gap: 0.35rem; padding: 0.6rem 1.1rem;
-        font-size: 0.82rem; font-weight: 600; font-family: inherit;
-        border-radius: var(--r-sm); border: 1px solid transparent;
-        cursor: pointer; text-decoration: none; white-space: nowrap;
-        transition: all 0.15s ease; line-height: 1;
-    }
-    .adm-returns .btn-adm--primary {
-        background: var(--c-primary); color: #fff;
-        box-shadow: 0 2px 6px rgba(168, 70, 31, 0.25);
-    }
-    .adm-returns .btn-adm--primary:hover {
-        background: #8f3a18; transform: translateY(-1px);
-        box-shadow: 0 4px 12px rgba(168, 70, 31, 0.32);
-    }
-    .adm-returns .btn-adm--ghost {
-        background: #fff; color: var(--c-text); border-color: var(--c-border-strong);
-    }
-    .adm-returns .btn-adm--ghost:hover {
-        background: #fbf9f5; border-color: #c8bfa9;
-    }
-    .adm-returns .btn-adm--danger {
-        background: #fff; color: #b91c1c; border-color: #fecaca;
-    }
-    .adm-returns .btn-adm--danger:hover {
-        background: #fef2f2; border-color: #b91c1c;
-    }
-    .adm-returns .btn-adm--success {
-        background: #166534; color: #fff;
-    }
-    .adm-returns .btn-adm--success:hover {
-        background: #14532d; transform: translateY(-1px);
-    }
-
-    /* TABLE */
-    .adm-returns .adm-table-card {
-        background: var(--c-card); border: 1px solid var(--c-border);
-        border-radius: var(--r-md); overflow: hidden; box-shadow: var(--c-shadow-sm);
-    }
+    .adm-returns .btn-adm { display: inline-flex; align-items: center; justify-content: center; gap: 0.35rem; padding: 0.6rem 1.1rem; font-size: 0.82rem; font-weight: 600; font-family: inherit; border-radius: var(--r-sm); border: 1px solid transparent; cursor: pointer; text-decoration: none; white-space: nowrap; transition: all 0.15s ease; line-height: 1; }
+    .adm-returns .btn-adm--primary { background: var(--c-primary); color: #fff; box-shadow: 0 2px 6px rgba(168, 70, 31, 0.25); }
+    .adm-returns .btn-adm--primary:hover { background: #8f3a18; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(168, 70, 31, 0.32); }
+    .adm-returns .btn-adm--ghost { background: #fff; color: var(--c-text); border-color: var(--c-border-strong); }
+    .adm-returns .btn-adm--ghost:hover { background: #fbf9f5; border-color: #c8bfa9; }
+    .adm-returns .btn-adm--danger { background: #fff; color: #b91c1c; border-color: #fecaca; }
+    .adm-returns .btn-adm--danger:hover { background: #fef2f2; border-color: #b91c1c; }
+    .adm-returns .btn-adm--success { background: #166534; color: #fff; }
+    .adm-returns .btn-adm--success:hover { background: #14532d; transform: translateY(-1px); }
+    .adm-returns .adm-table-card { background: var(--c-card); border: 1px solid var(--c-border); border-radius: var(--r-md); overflow: hidden; box-shadow: var(--c-shadow-sm); }
     .adm-returns .adm-table-scroll { overflow-x: auto; }
     .adm-returns .adm-table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-    .adm-returns .adm-table thead th {
-        text-align: left; padding: 0.85rem 1rem;
-        font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
-        letter-spacing: 0.06em; color: var(--c-text-muted);
-        background: #fbf9f5; border-bottom: 1px solid var(--c-border);
-        white-space: nowrap;
-    }
-    .adm-returns .adm-table tbody td {
-        padding: 0.95rem 1rem; border-bottom: 1px solid var(--c-border);
-        vertical-align: middle;
-    }
+    .adm-returns .adm-table thead th { text-align: left; padding: 0.85rem 1rem; font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--c-text-muted); background: #fbf9f5; border-bottom: 1px solid var(--c-border); white-space: nowrap; }
+    .adm-returns .adm-table tbody td { padding: 0.95rem 1rem; border-bottom: 1px solid var(--c-border); vertical-align: middle; }
     .adm-returns .adm-table tbody tr { transition: background 0.15s ease; }
     .adm-returns .adm-table tbody tr:hover { background: #fbf9f5; }
     .adm-returns .adm-table tbody tr:last-child td { border-bottom: none; }
-
-    .adm-returns .adm-code {
-        font-family: 'IBM Plex Mono', monospace;
-        font-weight: 700; color: var(--c-primary); font-size: 0.85rem;
-        white-space: nowrap;
-    }
-    .adm-returns .adm-sub {
-        font-size: 0.75rem; color: var(--c-text-muted);
-        margin-top: 2px; font-family: 'IBM Plex Mono', monospace;
-    }
-    .adm-returns .adm-customer-name {
-        font-weight: 600; color: var(--c-text);
-    }
-    .adm-returns .adm-customer-email {
-        font-size: 0.75rem; color: var(--c-text-muted); margin-top: 2px;
-    }
-    .adm-returns .adm-amount {
-        font-family: 'IBM Plex Mono', monospace;
-        font-weight: 700; color: var(--c-primary); white-space: nowrap;
-    }
-
-    /* BADGES */
-    .adm-returns .adm-badge {
-        display: inline-flex; align-items: center; gap: 0.3rem;
-        padding: 0.3rem 0.65rem; font-size: 0.72rem; font-weight: 600;
-        border-radius: 999px; line-height: 1.2; white-space: nowrap;
-        border: 1px solid transparent;
-    }
-    .adm-returns .adm-badge::before {
-        content: ''; width: 6px; height: 6px; border-radius: 50%;
-        background: currentColor; opacity: 0.85;
-    }
+    .adm-returns .adm-code { font-family: 'IBM Plex Mono', monospace; font-weight: 700; color: var(--c-primary); font-size: 0.85rem; white-space: nowrap; }
+    .adm-returns .adm-sub { font-size: 0.75rem; color: var(--c-text-muted); margin-top: 2px; font-family: 'IBM Plex Mono', monospace; }
+    .adm-returns .adm-customer-name { font-weight: 600; color: var(--c-text); }
+    .adm-returns .adm-customer-email { font-size: 0.75rem; color: var(--c-text-muted); margin-top: 2px; }
+    .adm-returns .adm-amount { font-family: 'IBM Plex Mono', monospace; font-weight: 700; color: var(--c-primary); white-space: nowrap; }
+    .adm-returns .adm-badge { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.3rem 0.65rem; font-size: 0.72rem; font-weight: 600; border-radius: 999px; line-height: 1.2; white-space: nowrap; border: 1px solid transparent; }
+    .adm-returns .adm-badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.85; }
     .adm-returns .adm-badge--orange { color: #c2410c; background: #fff7ed; border-color: #fed7aa; }
     .adm-returns .adm-badge--blue   { color: #1d4ed8; background: #eff6ff; border-color: #bfdbfe; }
     .adm-returns .adm-badge--green  { color: #15803d; background: #f0fdf4; border-color: #bbf7d0; }
     .adm-returns .adm-badge--red    { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
     .adm-returns .adm-badge--gray   { color: #57534e; background: #f5f5f4; border-color: #e7e5e4; }
-
-    /* ACTION CELL */
     .adm-returns .adm-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; }
-
-    /* EMPTY */
-    .adm-returns .adm-empty {
-        text-align: center; padding: 4rem 1.5rem; color: var(--c-text-muted);
-    }
+    .adm-returns .adm-empty { text-align: center; padding: 4rem 1.5rem; color: var(--c-text-muted); }
     .adm-returns .adm-empty-icon { font-size: 3rem; margin-bottom: 0.75rem; opacity: 0.5; }
-    .adm-returns .adm-empty-title {
-        font-size: 1rem; font-weight: 600; color: var(--c-text); margin-bottom: 0.35rem;
-    }
-
-    /* MODAL */
-    .adm-returns .adm-modal {
-        position: fixed; inset: 0; background: rgba(36, 33, 29, 0.55);
-        backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
-        display: none; align-items: center; justify-content: center;
-        z-index: 9999; padding: 1.5rem;
-    }
+    .adm-returns .adm-empty-title { font-size: 1rem; font-weight: 600; color: var(--c-text); margin-bottom: 0.35rem; }
+    .adm-returns .adm-modal { position: fixed; inset: 0; background: rgba(36, 33, 29, 0.55); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); display: none; align-items: center; justify-content: center; z-index: 9999; padding: 1.5rem; }
     .adm-returns .adm-modal.show { display: flex; animation: admFadeIn 0.2s ease; }
     @keyframes admFadeIn { from { opacity: 0; } to { opacity: 1; } }
-
-    .adm-returns .adm-modal__box {
-        background: #fff; border-radius: var(--r-lg); width: 100%;
-        max-width: 860px; max-height: 92vh; overflow-y: auto;
-        padding: 1.75rem 2rem 2rem; position: relative;
-        box-shadow: var(--c-shadow-lg);
-        animation: admSlideUp 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-    }
-    @keyframes admSlideUp {
-        from { opacity: 0; transform: translateY(20px) scale(0.98); }
-        to   { opacity: 1; transform: translateY(0) scale(1); }
-    }
-    .adm-returns .adm-modal__close {
-        position: absolute; top: 1rem; right: 1rem;
-        width: 36px; height: 36px; border-radius: 50%; border: none;
-        background: #f5f2ec; color: var(--c-text); font-size: 1.3rem;
-        line-height: 1; cursor: pointer;
-        display: flex; align-items: center; justify-content: center;
-        transition: all 0.15s ease;
-    }
+    .adm-returns .adm-modal__box { background: #fff; border-radius: var(--r-lg); width: 100%; max-width: 860px; max-height: 92vh; overflow-y: auto; padding: 1.75rem 2rem 2rem; position: relative; box-shadow: var(--c-shadow-lg); animation: admSlideUp 0.25s cubic-bezier(0.4, 0, 0.2, 1); }
+    @keyframes admSlideUp { from { opacity: 0; transform: translateY(20px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+    .adm-returns .adm-modal__close { position: absolute; top: 1rem; right: 1rem; width: 36px; height: 36px; border-radius: 50%; border: none; background: #f5f2ec; color: var(--c-text); font-size: 1.3rem; line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.15s ease; }
     .adm-returns .adm-modal__close:hover { background: #e8e0d0; transform: rotate(90deg); }
-
-    .adm-returns .adm-modal__title {
-        font-family: 'Playfair Display', Georgia, serif;
-        font-size: 1.5rem; margin: 0 0 1.5rem; color: var(--c-text);
-        padding-right: 3rem; letter-spacing: -0.01em;
-    }
-
-    /* PIN INPUT */
-    .adm-pin-box {
-        background: #faf8f4; border: 1px solid #efeae0;
-        border-radius: 12px; padding: 1.25rem;
-    }
+    .adm-returns .adm-modal__title { font-family: 'Playfair Display', Georgia, serif; font-size: 1.5rem; margin: 0 0 1.5rem; color: var(--c-text); padding-right: 3rem; letter-spacing: -0.01em; }
+    .adm-pin-box { background: #faf8f4; border: 1px solid #efeae0; border-radius: 12px; padding: 1.25rem; }
     .adm-pin-box.error { border-color: #b91c1c; background: #fef2f2; }
-    .adm-pin-input {
-        width: 100%; max-width: 240px; padding: 14px 18px;
-        border: 2px solid #d1d5db; border-radius: 10px;
-        font-size: 1.6rem; letter-spacing: 0.55em; text-align: center;
-        font-family: 'IBM Plex Mono', monospace; background: #fff;
-        box-sizing: border-box; transition: border-color 0.2s;
-    }
-    .adm-pin-input:focus {
-        outline: none; border-color: #a8461f;
-        box-shadow: 0 0 0 3px rgba(168,70,31,0.12);
-    }
+    .adm-pin-input { width: 100%; max-width: 240px; padding: 14px 18px; border: 2px solid #d1d5db; border-radius: 10px; font-size: 1.6rem; letter-spacing: 0.55em; text-align: center; font-family: 'IBM Plex Mono', monospace; background: #fff; box-sizing: border-box; transition: border-color 0.2s; }
+    .adm-pin-input:focus { outline: none; border-color: #a8461f; box-shadow: 0 0 0 3px rgba(168,70,31,0.12); }
     .adm-pin-input.error { border-color: #dc2626; animation: shakePin 0.35s; }
-    @keyframes shakePin {
-        0%,100% { transform: translateX(0); }
-        25%     { transform: translateX(-6px); }
-        75%     { transform: translateX(6px); }
-    }
-
-    /* TOAST */
-    .adm-return-toast {
-        position: fixed; top: 1.5rem; left: 50%;
-        transform: translateX(-50%) translateY(-20px);
-        background: #166534; color: #fff;
-        padding: 0.95rem 1.75rem;
-        font-size: 0.88rem; letter-spacing: 0.03em;
-        box-shadow: 0 10px 25px rgba(0,0,0,0.18);
-        z-index: 99999; opacity: 0;
-        transition: all 0.3s ease; max-width: 90vw;
-        border-radius: 8px; font-weight: 600;
-    }
+    @keyframes shakePin { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+    .adm-return-toast { position: fixed; top: 1.5rem; left: 50%; transform: translateX(-50%) translateY(-20px); background: #166534; color: #fff; padding: 0.95rem 1.75rem; font-size: 0.88rem; letter-spacing: 0.03em; box-shadow: 0 10px 25px rgba(0,0,0,0.18); z-index: 99999; opacity: 0; transition: all 0.3s ease; max-width: 90vw; border-radius: 8px; font-weight: 600; }
     .adm-return-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
     .adm-return-toast.error { background: #b91c1c; }
-
-    @media (max-width: 720px) {
-        .adm-returns .admin-page-head h1 { font-size: 1.6rem; }
-        .adm-returns .adm-stats { grid-template-columns: repeat(2, 1fr); gap: 0.6rem; }
-        .adm-returns .adm-stat-card { padding: 0.9rem; gap: 0.7rem; }
-        .adm-returns .adm-stat-icon { width: 40px; height: 40px; font-size: 1.3rem; }
-        .adm-returns .adm-stat-value { font-size: 1.25rem; }
-        .adm-returns .adm-filter-form { flex-direction: column; align-items: stretch; }
-        .adm-returns .adm-modal__box { padding: 1.5rem 1.25rem; }
-    }
 </style>
 
 <div class="adm-returns">
-
     <div class="admin-page-head">
         <div>
             <h1>Đơn hoàn</h1>
@@ -435,68 +213,31 @@ $payMap = [
     <?php if (!$adminHasPin): ?>
         <div style="background:#fef3c7;border:1px solid #fde68a;color:#92400e;padding:14px 18px;border-radius:10px;margin-bottom:1.5rem;font-size:0.9rem; display:flex; align-items:center; gap:8px;">
             <i class="ph ph-warning" style="font-size:1.2rem;"></i>
-            <div>
-                <b>Tài khoản admin chưa thiết lập mã PIN.</b>
-                Bạn cần thiết lập mã PIN (dùng chung với ví Atelier Pay) trước khi có thể duyệt đơn hoàn.
-                <a href="wallet.php" style="color:#a8461f;font-weight:700;text-decoration:none;">Thiết lập ngay &rarr;</a>
-            </div>
+            <div><b>Tài khoản admin chưa thiết lập mã PIN.</b> Bạn cần thiết lập mã PIN (dùng chung với ví Atelier Pay) trước khi có thể duyệt đơn hoàn. <a href="wallet.php" style="color:#a8461f;font-weight:700;text-decoration:none;">Thiết lập ngay &rarr;</a></div>
         </div>
     <?php endif; ?>
 
     <!-- STATS -->
     <div class="adm-stats">
         <a href="returns.php" class="adm-stat-card <?php echo ($filter === '') ? 'adm-stat-card--active' : ''; ?>">
-            <div class="adm-stat-icon" style="background:#eef2ff;color:#4338ca;">
-                <i class="ph ph-arrows-counter-clockwise"></i>
-            </div>
-            <div class="adm-stat-body">
-                <div class="adm-stat-value"><?php echo number_format($totalAll); ?></div>
-                <div class="adm-stat-label">Tất cả yêu cầu</div>
-            </div>
+            <div class="adm-stat-icon" style="background:#eef2ff;color:#4338ca;"><i class="ph ph-arrows-counter-clockwise"></i></div>
+            <div class="adm-stat-body"><div class="adm-stat-value"><?php echo number_format($totalAll); ?></div><div class="adm-stat-label">Tất cả yêu cầu</div></div>
         </a>
-
-        <a href="returns.php?status=pending"
-           class="adm-stat-card <?php echo $filter === 'pending' ? 'adm-stat-card--active' : ''; ?>">
-            <div class="adm-stat-icon" style="background:#fff7ed;color:#c2410c;">
-                <i class="ph ph-hourglass"></i>
-            </div>
-            <div class="adm-stat-body">
-                <div class="adm-stat-value"><?php echo number_format($totalPending); ?></div>
-                <div class="adm-stat-label">Chờ duyệt</div>
-            </div>
+        <a href="returns.php?status=pending" class="adm-stat-card <?php echo $filter === 'pending' ? 'adm-stat-card--active' : ''; ?>">
+            <div class="adm-stat-icon" style="background:#fff7ed;color:#c2410c;"><i class="ph ph-hourglass"></i></div>
+            <div class="adm-stat-body"><div class="adm-stat-value"><?php echo number_format($totalPending); ?></div><div class="adm-stat-label">Chờ duyệt</div></div>
         </a>
-
-        <a href="returns.php?status=refunding"
-           class="adm-stat-card <?php echo in_array($filter, ['refunding','approved'], true) ? 'adm-stat-card--active' : ''; ?>">
-            <div class="adm-stat-icon" style="background:#eff6ff;color:#1d4ed8;">
-                <i class="ph ph-arrows-clockwise"></i>
-            </div>
-            <div class="adm-stat-body">
-                <div class="adm-stat-value"><?php echo number_format($totalRefunding); ?></div>
-                <div class="adm-stat-label">Đang hoàn tiền</div>
-            </div>
+        <a href="returns.php?status=approved" class="adm-stat-card <?php echo in_array($filter, ['approved','refunding'], true) ? 'adm-stat-card--active' : ''; ?>">
+            <div class="adm-stat-icon" style="background:#eff6ff;color:#1d4ed8;"><i class="ph ph-truck"></i></div>
+            <div class="adm-stat-body"><div class="adm-stat-value"><?php echo number_format($totalApproved); ?></div><div class="adm-stat-label">Đang giao hàng</div></div>
         </a>
-
-        <a href="returns.php?status=refunded"
-           class="adm-stat-card <?php echo $filter === 'refunded' ? 'adm-stat-card--active' : ''; ?>">
-            <div class="adm-stat-icon" style="background:#f0fdf4;color:#15803d;">
-                <i class="ph ph-check-circle"></i>
-            </div>
-            <div class="adm-stat-body">
-                <div class="adm-stat-value"><?php echo number_format($totalRefunded); ?></div>
-                <div class="adm-stat-label">Đã hoàn tiền</div>
-            </div>
+        <a href="returns.php?status=refunded" class="adm-stat-card <?php echo $filter === 'refunded' ? 'adm-stat-card--active' : ''; ?>">
+            <div class="adm-stat-icon" style="background:#f0fdf4;color:#15803d;"><i class="ph ph-check-circle"></i></div>
+            <div class="adm-stat-body"><div class="adm-stat-value"><?php echo number_format($totalRefunded); ?></div><div class="adm-stat-label">Đã hoàn tiền</div></div>
         </a>
-
-        <a href="returns.php?status=rejected"
-           class="adm-stat-card <?php echo $filter === 'rejected' ? 'adm-stat-card--active' : ''; ?>">
-            <div class="adm-stat-icon" style="background:#fef2f2;color:#b91c1c;">
-                <i class="ph ph-x-circle"></i>
-            </div>
-            <div class="adm-stat-body">
-                <div class="adm-stat-value"><?php echo number_format($totalRejected); ?></div>
-                <div class="adm-stat-label">Đã từ chối</div>
-            </div>
+        <a href="returns.php?status=rejected" class="adm-stat-card <?php echo $filter === 'rejected' ? 'adm-stat-card--active' : ''; ?>">
+            <div class="adm-stat-icon" style="background:#fef2f2;color:#b91c1c;"><i class="ph ph-x-circle"></i></div>
+            <div class="adm-stat-body"><div class="adm-stat-value"><?php echo number_format($totalRejected); ?></div><div class="adm-stat-label">Đã từ chối</div></div>
         </a>
     </div>
 
@@ -505,26 +246,20 @@ $payMap = [
         <form method="GET" class="adm-filter-form">
             <div class="adm-filter-field adm-filter-field--search">
                 <label class="adm-filter-label"><i class="ph ph-magnifying-glass"></i> Tìm kiếm</label>
-                <input type="text" name="q" class="adm-input"
-                       value="<?php echo htmlspecialchars($search); ?>"
-                       placeholder="Mã đơn hoàn, mã đơn gốc, tên KH, email...">
+                <input type="text" name="q" class="adm-input" value="<?php echo htmlspecialchars($search); ?>" placeholder="Mã đơn hoàn, mã đơn gốc, tên KH, email...">
             </div>
             <div class="adm-filter-field adm-filter-field--status">
                 <label class="adm-filter-label">Trạng thái</label>
                 <select name="status" class="adm-select">
                     <option value="">Tất cả</option>
                     <?php foreach ($returnStatusMap as $k => $v): ?>
-                        <option value="<?php echo $k; ?>" <?php echo $filter === $k ? 'selected' : ''; ?>>
-                            <?php echo $v[0]; ?>
-                        </option>
+                        <option value="<?php echo $k; ?>" <?php echo $filter === $k ? 'selected' : ''; ?>><?php echo $v[0]; ?></option>
                     <?php endforeach; ?>
                 </select>
             </div>
             <div class="adm-filter-actions">
                 <button type="submit" class="btn-adm btn-adm--primary">Lọc</button>
-                <?php if ($search !== '' || $filter !== ''): ?>
-                    <a href="returns.php" class="btn-adm btn-adm--ghost">Xóa lọc</a>
-                <?php endif; ?>
+                <?php if ($search !== '' || $filter !== ''): ?><a href="returns.php" class="btn-adm btn-adm--ghost">Xóa lọc</a><?php endif; ?>
             </div>
         </form>
     </div>
@@ -535,7 +270,6 @@ $payMap = [
             <div class="adm-empty">
                 <div class="adm-empty-icon"><i class="ph ph-tray"></i></div>
                 <div class="adm-empty-title">Không có yêu cầu trả hàng nào</div>
-                <div style="font-size:0.85rem;">Thử thay đổi bộ lọc hoặc từ khóa tìm kiếm.</div>
             </div>
         <?php else: ?>
             <div class="adm-table-scroll">
@@ -553,11 +287,9 @@ $payMap = [
                     </thead>
                     <tbody>
                         <?php foreach ($returns as $r):
-                            $code = !empty($r['return_code'])
-                                ? $r['return_code']
-                                : ('RT' . date('Ymd', strtotime($r['created_at'])) . '-' . str_pad((string)$r['id'], 4, '0', STR_PAD_LEFT));
+                            $code = !empty($r['return_code']) ? $r['return_code'] : ('RT' . date('Ymd', strtotime($r['created_at'])) . '-' . str_pad((string)$r['id'], 4, '0', STR_PAD_LEFT));
                             $stInfo = $returnStatusMap[$r['status']] ?? ['Không rõ', 'adm-badge--gray'];
-                            $canAct = in_array($r['status'], ['pending', 'refunding'], true);
+                            $canAct = in_array($r['status'], ['pending', 'approved', 'refunding'], true);
                         ?>
                             <tr>
                                 <td>
@@ -565,53 +297,29 @@ $payMap = [
                                     <div class="adm-sub"><?php echo date('d/m/Y H:i', strtotime($r['created_at'])); ?></div>
                                 </td>
                                 <td>
-                                    <div class="adm-customer-name">
-                                        <?php echo htmlspecialchars($r['user_name'] ?? 'N/A'); ?>
-                                    </div>
-                                    <div class="adm-customer-email">
-                                        <?php echo htmlspecialchars($r['user_email'] ?? ''); ?>
-                                    </div>
+                                    <div class="adm-customer-name"><?php echo htmlspecialchars($r['user_name'] ?? 'N/A'); ?></div>
+                                    <div class="adm-customer-email"><?php echo htmlspecialchars($r['user_email'] ?? ''); ?></div>
                                 </td>
-                                <td>
-                                    <span style="font-family:'IBM Plex Mono',monospace;font-weight:600;">
-                                        #<?php echo (int)$r['order_id']; ?>
-                                    </span>
-                                </td>
-                                <td class="adm-amount">
-                                    <?php echo number_format($r['refund_amount'], 0, ',', '.'); ?>đ
-                                </td>
+                                <td><span style="font-family:'IBM Plex Mono',monospace;font-weight:600;">#<?php echo (int)$r['order_id']; ?></span></td>
+                                <td class="adm-amount"><?php echo number_format($r['refund_amount'], 0, ',', '.'); ?>đ</td>
                                 <td style="font-size:0.82rem;">
-                                    <div style="display:flex; align-items:center; gap:4px;">
-                                        <?php echo $refundMethodMap[$r['refund_method']] ?? $r['refund_method']; ?>
-                                    </div>
+                                    <div style="display:flex; align-items:center; gap:4px;"><?php echo $refundMethodMap[$r['refund_method']] ?? $r['refund_method']; ?></div>
                                     <?php if ($r['refund_method'] === 'bank' && !empty($r['refund_bank_name'])): ?>
-                                        <div class="adm-sub">
-                                            <?php echo htmlspecialchars($r['refund_bank_name']); ?>
-                                            ••••<?php echo substr($r['refund_bank_account'] ?? '', -4); ?>
-                                        </div>
+                                        <div class="adm-sub"><?php echo htmlspecialchars($r['refund_bank_name']); ?> ••••<?php echo substr($r['refund_bank_account'] ?? '', -4); ?></div>
                                     <?php endif; ?>
                                 </td>
-                                <td>
-                                    <span class="adm-badge <?php echo $stInfo[1]; ?>">
-                                        <?php echo $stInfo[0]; ?>
-                                    </span>
-                                </td>
+                                <td><span class="adm-badge <?php echo $stInfo[1]; ?>"><?php echo $stInfo[0]; ?></span></td>
                                 <td>
                                     <div class="adm-actions">
-                                        <button type="button"
-                                                class="btn-adm btn-adm--ghost btn-view-return"
-                                                data-id="<?php echo (int)$r['id']; ?>">
+                                        <button type="button" class="btn-adm btn-adm--ghost btn-view-return" data-id="<?php echo (int)$r['id']; ?>">
                                             <i class="ph ph-eye"></i> Xem
                                         </button>
                                         <?php if ($canAct): ?>
-                                            <button type="button"
-                                                    class="btn-adm btn-adm--primary btn-view-return"
-                                                    data-id="<?php echo (int)$r['id']; ?>"
-                                                    data-auto-action="approve">
+                                            <button type="button" class="btn-adm btn-adm--primary btn-view-return" data-id="<?php echo (int)$r['id']; ?>" data-auto-action="<?php echo $r['status'] === 'pending' ? 'approve' : 'mark_refunded'; ?>">
                                                 <?php if ($r['status'] === 'pending'): ?>
                                                     <i class="ph ph-check"></i> Duyệt
                                                 <?php else: ?>
-                                                    <i class="ph ph-arrows-clockwise"></i> Hoàn tất
+                                                    <i class="ph ph-check-circle"></i> Nhận hàng & HT
                                                 <?php endif; ?>
                                             </button>
                                         <?php endif; ?>
@@ -632,14 +340,11 @@ $payMap = [
         <div class="adm-modal__box">
             <button type="button" class="adm-modal__close" id="closeReturnModal">&times;</button>
             <h2 class="adm-modal__title" id="returnModalTitle">Chi tiết yêu cầu trả hàng</h2>
-            <div id="returnDetailContent">
-                <p style="text-align:center;padding:2rem;color:var(--c-text-muted);">Đang tải...</p>
-            </div>
+            <div id="returnDetailContent"><p style="text-align:center;padding:2rem;color:var(--c-text-muted);">Đang tải...</p></div>
         </div>
     </div>
 </div>
 
-<!-- TOAST -->
 <div id="admReturnToast" class="adm-return-toast" hidden></div>
 
 <script>
@@ -656,9 +361,7 @@ $payMap = [
         toastEl.textContent = msg;
         toastEl.className = 'adm-return-toast show' + (isError ? ' error' : '');
         clearTimeout(showToast._t);
-        showToast._t = setTimeout(function () {
-            toastEl.className = 'adm-return-toast';
-        }, 3500);
+        showToast._t = setTimeout(function () { toastEl.className = 'adm-return-toast'; }, 3500);
     }
 
     function escapeHtml(s) {
@@ -669,22 +372,11 @@ $payMap = [
     }
     function formatVnd(n) { return new Intl.NumberFormat('vi-VN').format(Math.round(n)) + 'đ'; }
 
-    function openModal() {
-        modal.classList.add('show');
-        document.body.style.overflow = 'hidden';
-    }
-    function closeModal() {
-        modal.classList.remove('show');
-        document.body.style.overflow = '';
-    }
+    function openModal() { modal.classList.add('show'); document.body.style.overflow = 'hidden'; }
+    function closeModal() { modal.classList.remove('show'); document.body.style.overflow = ''; }
 
     document.getElementById('closeReturnModal').addEventListener('click', closeModal);
-    modal.addEventListener('click', function (e) {
-        if (e.target === modal) closeModal();
-    });
-    document.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && modal.classList.contains('show')) closeModal();
-    });
+    modal.addEventListener('click', function (e) { if (e.target === modal) closeModal(); });
 
     /* ============ LOAD DETAIL ============ */
     function loadDetail(id, autoAction) {
@@ -697,15 +389,14 @@ $payMap = [
             .then(function (r) { return r.json(); })
             .then(function (data) {
                 if (!data.ok) {
-                    content.innerHTML = '<p style="text-align:center;padding:2rem;color:#b91c1c;">'
-                        + escapeHtml(data.msg || 'Không tải được') + '</p>';
+                    content.innerHTML = '<p style="text-align:center;padding:2rem;color:#b91c1c;">' + escapeHtml(data.msg || 'Không tải được') + '</p>';
                     return;
                 }
                 renderDetail(data);
 
-                if (autoAction === 'approve') {
+                if (autoAction) {
                     setTimeout(function () {
-                        var btn = document.getElementById('btnActionApprove');
+                        var btn = document.getElementById(autoAction === 'approve' ? 'btnActionApprove' : 'btnActionMarkRefunded');
                         if (btn) btn.click();
                     }, 300);
                 }
@@ -723,8 +414,8 @@ $payMap = [
 
         var statusLabels = {
             'pending':   '<i class="ph ph-hourglass"></i> Chờ duyệt',
-            'approved':  '<i class="ph ph-check"></i> Đã duyệt',
-            'refunding': '<i class="ph ph-arrows-clockwise"></i> Đang hoàn tiền',
+            'approved':  '<i class="ph ph-truck"></i> Đang giao hàng',
+            'refunding': '<i class="ph ph-arrows-clockwise"></i> Đang xử lý',
             'refunded':  '<i class="ph ph-check-circle"></i> Đã hoàn tiền',
             'rejected':  '<i class="ph ph-x-circle"></i> Đã từ chối',
             'cancelled': '<i class="ph ph-minus-circle"></i> Đã hủy'
@@ -752,13 +443,11 @@ $payMap = [
         html += '<div style="display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border-radius:999px;font-size:0.78rem;font-weight:700;color:#fff;background:' + (statusColors[r.status] || '#57534e') + ';">' + (statusLabels[r.status] || r.status) + '</div>';
         html += '<div style="font-size:1.35rem;font-weight:700;color:#a8461f;font-family:\'IBM Plex Mono\',monospace;margin-top:8px;">' + formatVnd(r.refund_amount) + '</div>';
         html += '<div style="font-size:0.78rem;color:#6b7280;">' + (r.refund_method_label || '') + '</div>';
-        html += '</div>';
-        html += '</div></div>';
+        html += '</div></div></div>';
 
         /* GRID INFO */
         html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem;">';
-
-        /* NGƯỜI GỬI */
+        /* KHÁCH HÀNG */
         html += '<div style="background:#fff;padding:1rem;border-radius:10px;border:1px solid #efeae0;">';
         html += '<div style="display:flex;align-items:center;gap:6px;font-size:0.7rem;letter-spacing:0.1em;text-transform:uppercase;color:#8a8377;margin-bottom:0.6rem;font-weight:700;"><i class="ph ph-user"></i> Khách hàng</div>';
         html += '<div style="font-size:0.9rem;line-height:1.7;">';
@@ -766,7 +455,6 @@ $payMap = [
         if (r.user_email) html += '<div><i class="ph ph-envelope-simple" style="color:#8a8377;margin-right:4px;"></i>' + escapeHtml(r.user_email) + '</div>';
         if (r.user_phone) html += '<div><i class="ph ph-phone" style="color:#8a8377;margin-right:4px;"></i>' + escapeHtml(r.user_phone) + '</div>';
         html += '</div></div>';
-
         /* HOÀN TIỀN */
         html += '<div style="background:#fff;padding:1rem;border-radius:10px;border:1px solid #efeae0;">';
         html += '<div style="display:flex;align-items:center;gap:6px;font-size:0.7rem;letter-spacing:0.1em;text-transform:uppercase;color:#8a8377;margin-bottom:0.6rem;font-weight:700;"><i class="ph ph-money"></i> Hoàn tiền</div>';
@@ -779,20 +467,13 @@ $payMap = [
             html += '<div>' + escapeHtml(r.refund_bank_holder || '') + '</div>';
             html += '</div>';
         }
-        if (r.wallet_balance !== null && r.wallet_balance !== undefined) {
-            html += '<div style="font-size:0.8rem;color:#6b7280;margin-top:6px;">Số dư ví hiện tại: <b>' + formatVnd(r.wallet_balance) + '</b></div>';
-        }
-        html += '</div></div>';
-
-        html += '</div>';
+        html += '</div></div></div>';
 
         /* LÝ DO */
         html += '<div style="background:#fef3c7;border:1px solid #fde68a;border-radius:10px;padding:1rem;margin-bottom:1.5rem;">';
         html += '<div style="display:flex;align-items:center;gap:6px;font-size:0.7rem;letter-spacing:0.1em;text-transform:uppercase;color:#92400e;font-weight:700;margin-bottom:6px;"><i class="ph ph-note-pencil"></i> Lý do trả hàng</div>';
         html += '<div style="color:#78350f;font-weight:600;font-size:0.9rem;">' + escapeHtml(r.reason) + '</div>';
-        if (r.reason_detail) {
-            html += '<div style="color:#78350f;font-size:0.85rem;margin-top:6px;font-style:italic;">"' + escapeHtml(r.reason_detail) + '"</div>';
-        }
+        if (r.reason_detail) html += '<div style="color:#78350f;font-size:0.85rem;margin-top:6px;font-style:italic;">"' + escapeHtml(r.reason_detail) + '"</div>';
         html += '</div>';
 
         /* ẢNH */
@@ -801,9 +482,7 @@ $payMap = [
             html += '<div style="display:flex;align-items:center;gap:6px;font-size:0.7rem;letter-spacing:0.1em;text-transform:uppercase;color:#8a8377;font-weight:700;margin-bottom:8px;"><i class="ph ph-image"></i> Ảnh minh chứng (' + images.length + ')</div>';
             html += '<div style="display:flex;gap:8px;flex-wrap:wrap;">';
             images.forEach(function (url) {
-                html += '<a href="../' + escapeHtml(url) + '" target="_blank" style="display:block;">';
-                html += '<img src="../' + escapeHtml(url) + '" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;">';
-                html += '</a>';
+                html += '<a href="../' + escapeHtml(url) + '" target="_blank" style="display:block;"><img src="../' + escapeHtml(url) + '" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid #e5e7eb;"></a>';
             });
             html += '</div></div>';
         }
@@ -818,53 +497,33 @@ $payMap = [
         html += '<th style="text-align:center;padding:0.7rem 0.9rem;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.06em;color:#8a8377;width:60px;">SL</th>';
         html += '<th style="text-align:right;padding:0.7rem 0.9rem;font-size:0.68rem;text-transform:uppercase;letter-spacing:0.06em;color:#8a8377;width:120px;">Thành tiền</th>';
         html += '</tr></thead><tbody>';
-
         items.forEach(function (it) {
-            var sub = it.price * it.quantity;
             html += '<tr style="border-top:1px solid #efeae0;">';
             html += '<td style="padding:0.7rem 0.9rem;"><b>' + escapeHtml(it.product_name) + '</b></td>';
             html += '<td style="padding:0.7rem 0.9rem;text-align:center;">' + escapeHtml(it.size || '—') + '</td>';
             html += '<td style="padding:0.7rem 0.9rem;text-align:center;">x' + it.quantity + '</td>';
-            html += '<td style="padding:0.7rem 0.9rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;">' + formatVnd(sub) + '</td>';
+            html += '<td style="padding:0.7rem 0.9rem;text-align:right;font-family:\'IBM Plex Mono\',monospace;">' + formatVnd(it.price * it.quantity) + '</td>';
             html += '</tr>';
         });
         html += '</tbody></table></div>';
-
-        /* ADMIN NOTE (nếu có) */
-        if (r.admin_note) {
-            html += '<div style="background:#f0f9ff;border-left:4px solid #0284c7;padding:0.9rem 1rem;border-radius:6px;margin-bottom:1.5rem;">';
-            html += '<div style="display:flex;align-items:center;gap:6px;font-size:0.7rem;text-transform:uppercase;letter-spacing:0.1em;color:#075985;font-weight:700;margin-bottom:4px;"><i class="ph ph-push-pin"></i> Ghi chú admin</div>';
-            html += '<div style="color:#0c4a6e;font-size:0.88rem;">' + escapeHtml(r.admin_note) + '</div>';
-            html += '</div>';
-        }
 
         /* ACTIONS */
         if (r.status === 'pending') {
             html += '<div id="adminActionSection" style="border-top:2px solid #efeae0;padding-top:1.5rem;margin-top:1rem;">';
             html += '<div style="display:flex;align-items:center;gap:6px;font-size:0.7rem;letter-spacing:0.1em;text-transform:uppercase;color:#8a8377;font-weight:700;margin-bottom:12px;"><i class="ph ph-lightning"></i> Thao tác</div>';
-            
-            // Khối nút bấm ban đầu
             html += '<div id="actionButtons" style="display:flex;gap:10px;flex-wrap:wrap;">';
-            html += '<button type="button" class="btn-adm btn-adm--success" id="btnActionApprove" style="padding:0.75rem 1.5rem;font-size:0.88rem;"><i class="ph ph-check-circle"></i> Chấp nhận & Hoàn tiền</button>';
-            html += '<button type="button" class="btn-adm btn-adm--danger" id="btnActionReject" style="padding:0.75rem 1.5rem;font-size:0.88rem;"><i class="ph ph-x-circle"></i> Từ chối yêu cầu</button>';
+            html += '<button type="button" class="btn-adm btn-adm--success" id="btnActionApprove" style="padding:0.75rem 1.5rem;font-size:0.88rem;"><i class="ph ph-check"></i> Duyệt yêu cầu trả hàng</button>';
+            html += '<button type="button" class="btn-adm btn-adm--danger" id="btnActionReject" style="padding:0.75rem 1.5rem;font-size:0.88rem;"><i class="ph ph-x"></i> Từ chối</button>';
             html += '</div>';
-
-            // Khối nhập PIN (ẩn lúc đầu)
             html += '<div id="actionConfirmBox" style="display:none;"></div>';
-            
             html += '</div>';
-        } else if (r.status === 'refunding' || r.status === 'approved') {
+        } else if (r.status === 'approved' || r.status === 'refunding') {
             html += '<div id="adminActionSection" style="border-top:2px solid #efeae0;padding-top:1.5rem;margin-top:1rem;">';
             html += '<div style="display:flex;align-items:center;gap:6px;font-size:0.7rem;letter-spacing:0.1em;text-transform:uppercase;color:#8a8377;font-weight:700;margin-bottom:12px;"><i class="ph ph-lightning"></i> Thao tác</div>';
-            
-            // Khối nút bấm ban đầu
             html += '<div id="actionButtons" style="display:flex;gap:10px;flex-wrap:wrap;">';
-            html += '<button type="button" class="btn-adm btn-adm--success" id="btnActionMarkRefunded" style="padding:0.75rem 1.5rem;font-size:0.88rem;"><i class="ph ph-check-circle"></i> Đánh dấu đã hoàn tiền</button>';
+            html += '<button type="button" class="btn-adm btn-adm--success" id="btnActionMarkRefunded" style="padding:0.75rem 1.5rem;font-size:0.88rem;"><i class="ph ph-check-circle"></i> Đã nhận được hàng & Hoàn tiền</button>';
             html += '</div>';
-
-            // Khối nhập PIN (ẩn lúc đầu)
             html += '<div id="actionConfirmBox" style="display:none;"></div>';
-
             html += '</div>';
         }
 
@@ -880,7 +539,7 @@ $payMap = [
         if (btnMarkRefunded) btnMarkRefunded.addEventListener('click', function () { showPinConfirm('mark_refunded'); });
     }
 
-    /* ============ SHOW PIN CONFIRM (TOGGLE UI) ============ */
+    /* ============ SHOW PIN CONFIRM ============ */
     function showPinConfirm(action) {
         if (!HAS_PIN) {
             showToast('Bạn chưa thiết lập mã PIN. Vui lòng thiết lập trong ví Atelier Pay.', true);
@@ -888,9 +547,9 @@ $payMap = [
         }
 
         var actionLabels = {
-            'approve':        { title: '<i class="ph ph-check-circle"></i> Xác nhận chấp nhận & hoàn tiền', color: '#166534', note: 'Tiền sẽ được cộng vào ví Atelier Pay của khách (hoặc chuyển khoản thủ công nếu chọn bank).' },
+            'approve':        { title: '<i class="ph ph-check"></i> Xác nhận duyệt đơn hoàn', color: '#166534', note: 'Lúc này tiền CHƯA được hoàn. Đơn sẽ chuyển sang trạng thái "Đang giao hàng". Khi hàng hoàn về tới shop, bạn mới bấm hoàn tiền cho khách.' },
             'reject':         { title: '<i class="ph ph-x-circle"></i> Xác nhận từ chối', color: '#b91c1c', note: 'Khách sẽ nhận được thông báo từ chối qua email.' },
-            'mark_refunded':  { title: '<i class="ph ph-check-circle"></i> Xác nhận đã hoàn tiền', color: '#166534', note: 'Bạn xác nhận đã chuyển khoản cho khách. Đơn sẽ được đánh dấu hoàn tất.' }
+            'mark_refunded':  { title: '<i class="ph ph-check-circle"></i> Xác nhận đã nhận hàng & Hoàn tiền', color: '#166534', note: 'Bạn xác nhận đã nhận được gói hàng hoàn trả. Hệ thống sẽ TIẾN HÀNH HOÀN TIỀN ngay bây giờ.' }
         };
         var info = actionLabels[action] || { title: 'Xác nhận', color: '#24211d', note: '' };
 
@@ -917,19 +576,14 @@ $payMap = [
             '<div style="display:flex;gap:10px;margin-top:1rem;">' +
             '<button type="button" id="pinCancelBtn" class="btn-adm btn-adm--ghost" style="flex:1;padding:0.75rem;font-size:0.88rem;">Hủy bỏ</button>' +
             '<button type="button" id="pinConfirmBtn" class="btn-adm btn-adm--success" style="flex:2;padding:0.75rem;font-size:0.88rem;">Xác nhận</button>' +
-            '</div>' +
-            '</div>' +
-            '</div>';
+            '</div></div></div>';
 
         var btnContainer = document.getElementById('actionButtons');
         var confirmContainer = document.getElementById('actionConfirmBox');
 
-        // Ẩn nút, hiện form nhập PIN
         btnContainer.style.display = 'none';
         confirmContainer.style.display = 'block';
         confirmContainer.innerHTML = confirmHtml;
-
-        // Scroll xuống phần nhập PIN
         confirmContainer.scrollIntoView({ behavior: 'smooth', block: 'center' });
 
         var pinInput = document.getElementById('adminPinInput');
@@ -946,7 +600,6 @@ $payMap = [
         pinInput.focus();
 
         document.getElementById('pinCancelBtn').addEventListener('click', function () {
-            // Hủy -> Ẩn form, hiện lại nút
             confirmContainer.style.display = 'none';
             confirmContainer.innerHTML = '';
             btnContainer.style.display = 'flex';
@@ -1012,9 +665,7 @@ $payMap = [
         }
 
         confirmBtn.addEventListener('click', doConfirm);
-        pinInput.addEventListener('keydown', function (e) {
-            if (e.key === 'Enter') doConfirm();
-        });
+        pinInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') doConfirm(); });
     }
 
     /* ============ BIND BUTTONS ============ */

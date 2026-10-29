@@ -85,7 +85,7 @@ $pageTitles = [
     'vouchers.php'           => 'Voucher / Mã giảm giá',
     'reviews.php'            => 'Đánh giá',
     'settings.php'           => 'Tài khoản nhận tiền',
-    'tax.php'                => 'Quản lý thuế',
+    'tax.php'                => 'Quản lý doanh thu và thuế',
     'notifications.php'      => 'Thông báo',
     'users.php'              => 'Người dùng',
     'support.php'            => 'Yêu cầu hỗ trợ',
@@ -1120,7 +1120,7 @@ $pageTitle = $pageTitles[$currentPage] ?? 'Quản trị';
 
             <li>
                 <a href="tax.php" class="<?php echo $currentPage === 'tax.php' ? 'active' : ''; ?>">
-                    <i class="ph ph-chart-bar"></i> Quản lý thuế
+                    <i class="ph ph-chart-bar"></i> Doanh thu và thuế
                 </a>
             </li>
 

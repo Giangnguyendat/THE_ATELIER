@@ -10,12 +10,10 @@ if (empty($_SESSION['csrf_token'])) {
 // 1. XỬ LÝ AJAX THÊM VÀO GIỎ HÀNG
 // ==========================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'ajax_add_to_cart') {
-    // ✅ Buffer ngay đầu để chặn output rác
     while (ob_get_level() > 0) { ob_end_clean(); }
     ob_start();
     header('Content-Type: application/json; charset=utf-8');
 
-    // Kiểm tra CSRF
     if (empty($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
         echo json_encode(['success' => false, 'message' => 'Lỗi bảo mật: Token không hợp lệ!']);
         exit;
@@ -35,7 +33,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'ajax_
         exit;
     }
 
-    // Lấy thông tin sản phẩm
     $stmt = $pdo->prepare("SELECT id, name, price, discount_percent, image_url, description, gender FROM products WHERE id = ?");
     $stmt->execute([$productId]);
     $product = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -45,7 +42,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'ajax_
         exit;
     }
 
-    // ✅ KIỂM TRA TỒN KHO
     $available = function_exists('getProductStock')
         ? getProductStock($pdo, $productId, $size)
         : 999;
@@ -76,7 +72,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'ajax_
         exit;
     }
 
-    // Tính giá
     $finalPrice = function_exists('calculateProductPrice')
         ? calculateProductPrice($product)['final']
         : ((float)$product['discount_percent'] > 0
@@ -100,7 +95,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'ajax_
 
     $totalCartItems = array_sum(array_column($_SESSION['cart'], 'quantity'));
 
-    // ✅ Xóa buffer trước khi gửi JSON
     while (ob_get_level() > 0) { ob_end_clean(); }
     ob_start();
 
@@ -115,20 +109,56 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'ajax_
 // ==========================================
 // 2. LỌC, SẮP XẾP VÀ PHÂN TRANG
 // ==========================================
-$category = isset($_GET['category']) ? (int)$_GET['category'] : 0;
-$search   = isset($_GET['search'])   ? trim($_GET['search']) : '';
-$sort     = isset($_GET['sort'])     ? $_GET['sort'] : 'newest';
-$page     = isset($_GET['page'])     ? max(1, (int)$_GET['page']) : 1;
-$perPage  = 12;
+$category   = isset($_GET['category']) ? (int)$_GET['category'] : 0;
+$collection = isset($_GET['collection']) ? trim($_GET['collection']) : '';
+$search     = isset($_GET['search'])   ? trim($_GET['search']) : '';
+$sort       = isset($_GET['sort'])     ? $_GET['sort'] : 'newest';
+$page       = isset($_GET['page'])     ? max(1, (int)$_GET['page']) : 1;
+$perPage    = 12;
 
 $where  = [];
 $params = [];
 
+// Lọc theo danh mục
 if ($category > 0) {
     $where[]  = "p.category_id = ?";
     $params[] = $category;
 }
 
+// Lọc theo bộ sưu tập (dựa vào ID chúng ta đã tạo)
+if ($collection !== '') {
+    switch ($collection) {
+        case 'giam-gia':
+            $where[] = "p.discount_percent > 0 AND p.id < 100";
+            break;
+        case 'combo-thu-dong':
+            $where[] = "p.category_id = (SELECT id FROM categories WHERE slug='combo' LIMIT 1) AND p.id < 100";
+            break;
+        case 'ban-chay':
+            $where[] = "p.sold_count > 0";
+            // Tự động đổi sort sang bán chạy nếu người dùng chưa chọn sort khác
+            if (!isset($_GET['sort'])) $sort = 'best_seller';
+            break;
+        case 'giam-kich-san':
+            $where[] = "p.id BETWEEN 100 AND 104";
+            break;
+        case 'combo-thoi-trang':
+            $where[] = "p.id BETWEEN 105 AND 109";
+            break;
+        case 'phong-cach-toi-gian':
+            $where[] = "p.id BETWEEN 110 AND 114";
+            break;
+        case 'khuyen-mai-mua-he':
+            $where[] = "p.id BETWEEN 115 AND 119";
+            break;
+        case 'san-pham-moi':
+            $where[] = "p.id BETWEEN 120 AND 124";
+            if (!isset($_GET['sort'])) $sort = 'newest';
+            break;
+    }
+}
+
+// Lọc theo tìm kiếm
 if ($search !== '') {
     $where[]  = "(p.name LIKE ? OR p.description LIKE ?)";
     $params[] = '%' . $search . '%';
@@ -174,7 +204,7 @@ foreach ($params as $key => $val) {
 $stmt->execute();
 $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// ✅ Lấy rating cho TẤT CẢ SP — 1 query duy nhất
+// Lấy rating
 $ratingsByProduct = [];
 if (!empty($products)) {
     $ids = array_column($products, 'id');
@@ -252,6 +282,21 @@ include 'includes/header.php';
                     </select>
                 </div>
 
+                <!-- BỔ SUNG: Lọc theo Bộ sưu tập -->
+                <div class="filter-group">
+                    <select name="collection">
+                        <option value="">Tất cả bộ sưu tập</option>
+                        <option value="ban-chay" <?php echo $collection === 'ban-chay' ? 'selected' : ''; ?>>Bán chạy nhất</option>
+                        <option value="giam-gia" <?php echo $collection === 'giam-gia' ? 'selected' : ''; ?>>Đang giảm giá</option>
+                        <option value="giam-kich-san" <?php echo $collection === 'giam-kich-san' ? 'selected' : ''; ?>>Giảm kịch sàn</option>
+                        <option value="combo-thoi-trang" <?php echo $collection === 'combo-thoi-trang' ? 'selected' : ''; ?>>Combo đồ thời trang</option>
+                        <option value="combo-thu-dong" <?php echo $collection === 'combo-thu-dong' ? 'selected' : ''; ?>>Combo thu đông</option>
+                        <option value="phong-cach-toi-gian" <?php echo $collection === 'phong-cach-toi-gian' ? 'selected' : ''; ?>>Phong cách tối giản</option>
+                        <option value="khuyen-mai-mua-he" <?php echo $collection === 'khuyen-mai-mua-he' ? 'selected' : ''; ?>>Khuyến mãi mùa hè</option>
+                        <option value="san-pham-moi" <?php echo $collection === 'san-pham-moi' ? 'selected' : ''; ?>>Sản phẩm mới</option>
+                    </select>
+                </div>
+
                 <div class="filter-group">
                     <select name="sort">
                         <option value="newest"      <?php echo $sort === 'newest'      ? 'selected' : ''; ?>>Mới nhất</option>
@@ -266,7 +311,7 @@ include 'includes/header.php';
 
                 <div class="filter-actions">
                     <button type="submit" class="btn-filter">Lọc Sản Phẩm</button>
-                    <?php if ($category > 0 || $search !== ''): ?>
+                    <?php if ($category > 0 || $search !== '' || $collection !== ''): ?>
                         <a href="products.php" class="btn-reset">Xóa bộ lọc</a>
                     <?php endif; ?>
                 </div>
@@ -286,7 +331,7 @@ include 'includes/header.php';
         <!-- Danh Sách Sản Phẩm -->
         <?php if (empty($products)): ?>
             <div class="no-product-card">
-                <div class="no-product-icon">&#128092;</div>
+                <div class="no-product-icon"><i class="ph ph-tote"></i></div>
                 <h3>Không tìm thấy sản phẩm phù hợp</h3>
                 <p>Thử tìm kiếm với từ khóa khác hoặc bỏ các điều kiện lọc hiện tại.</p>
                 <a href="products.php" class="btn-primary">Xem tất cả sản phẩm</a>
@@ -296,7 +341,6 @@ include 'includes/header.php';
                 <?php foreach ($products as $product):
                     $pid = (int)$product['id'];
 
-                    // Tính giá
                     if (function_exists('calculateProductPrice')) {
                         $pricing = calculateProductPrice($product);
                     } else {
@@ -312,12 +356,10 @@ include 'includes/header.php';
                         ];
                     }
 
-                    // Stock
                     $stocks       = function_exists('getAllStocks') ? getAllStocks($pdo, $pid) : [];
                     $totalStock   = array_sum($stocks);
                     $isOutOfStock = $totalStock <= 0;
 
-                    // Rating
                     $rv = $ratingsByProduct[$pid] ?? ['total' => 0, 'avg' => 0];
                     $avgRating    = $rv['avg'];
                     $totalReviews = $rv['total'];
@@ -347,7 +389,6 @@ include 'includes/header.php';
                                      class="pc__img">
                             </a>
 
-                            <!-- Badges -->
                             <div class="pc__badges">
                                 <?php if ($savedPct > 0): ?>
                                     <span class="pc__badge pc__badge--sale">-<?php echo (int)$savedPct; ?>%</span>
@@ -359,7 +400,6 @@ include 'includes/header.php';
                                 <?php endif; ?>
                             </div>
 
-                            <!-- Action buttons -->
                             <?php if (!$isOutOfStock): ?>
                                 <div class="pc__actions">
                                     <button type="button" class="pc__action" title="Yêu thích" aria-label="Yêu thích">
@@ -377,13 +417,12 @@ include 'includes/header.php';
                                 </div>
                             <?php endif; ?>
 
-                            <!-- Quick view / out of stock overlay -->
                             <span class="pc__quick-add" style="pointer-events:none; opacity:0;"></span>
                             <div class="pc__overlay-cta">
                                 <?php if ($isOutOfStock): ?>
                                     <span class="pc__quick-add" style="background:#1c1b19;color:#fffdf9;">Hết hàng</span>
                                 <?php else: ?>
-                                    <span class="pc__quick-add">👁 Xem nhanh</span>
+                                    <span class="pc__quick-add"><i class="ph ph-eye"></i> Xem nhanh</span>
                                 <?php endif; ?>
                             </div>
                         </div>
@@ -403,7 +442,6 @@ include 'includes/header.php';
                                 </a>
                             </h3>
 
-                            <!-- Rating -->
                             <div class="pc__rating">
                                 <?php if ($totalReviews > 0): ?>
                                     <span class="pc__stars">
@@ -422,7 +460,6 @@ include 'includes/header.php';
                                 <?php endif; ?>
                             </div>
 
-                            <!-- Price -->
                             <div class="pc__price">
                                 <div class="pc__price-main">
                                     <span class="pc__price-current"><?php echo number_format($pricing['final'], 0, ',', '.'); ?><u>đ</u></span>
@@ -437,7 +474,6 @@ include 'includes/header.php';
                                 <?php endif; ?>
                             </div>
 
-                            <!-- CTA -->
                             <a href="product-details.php?id=<?php echo $pid; ?>" class="pc__cta">
                                 <?php echo $isOutOfStock ? 'Xem sản phẩm' : 'Xem chi tiết'; ?>
                                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -485,27 +521,22 @@ include 'includes/header.php';
     </div>
 </main>
 
-<!-- ================= MODAL QUICK VIEW ================= -->
+<!-- MODAL QUICK VIEW -->
 <div class="modal-overlay" id="quickViewModal" aria-hidden="true" role="dialog">
     <div class="modal-content">
-        <button type="button" class="modal-close" id="closeModalBtn" aria-label="Đóng">&times;</button>
-
+        <button type="button" class="modal-close" id="closeModalBtn" aria-label="Đóng"><i class="ph ph-x"></i></button>
         <div class="modal-body">
             <div class="modal-product-image">
                 <img id="modalProductImg" src="" alt="Hình sản phẩm">
             </div>
-
             <div class="modal-product-details">
                 <span class="modal-category" id="modalProductCategory">Category</span>
                 <h2 class="modal-title" id="modalProductName">Tên Sản Phẩm</h2>
-
                 <div class="modal-price-box">
                     <span class="modal-price" id="modalProductPrice">0đ</span>
                     <span class="modal-old-price" id="modalProductOldPrice"></span>
                 </div>
-
                 <p class="modal-description" id="modalProductDesc">Mô tả sản phẩm...</p>
-
                 <form id="quickAddToCartForm" method="post">
                     <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                     <input type="hidden" name="action" value="ajax_add_to_cart">
@@ -544,8 +575,7 @@ include 'includes/header.php';
                             <input type="number" name="quantity" id="modalQtyInput" value="1" min="1">
                             <button type="button" class="btn-modal-qty" id="qtyPlus" aria-label="Tăng số lượng">&plus;</button>
                         </div>
-
-                        <button type="submit" class="btn-modal-add-cart" id="btnSubmitCart">&#128722; Thêm vào giỏ hàng</button>
+                        <button type="submit" class="btn-modal-add-cart" id="btnSubmitCart"><i class="ph ph-shopping-cart"></i> Thêm vào giỏ hàng</button>
                     </div>
                 </form>
             </div>
@@ -553,95 +583,29 @@ include 'includes/header.php';
     </div>
 </div>
 
-<!-- CSS bổ sung cho listing -->
+<!-- CSS bổ sung cho listing (Giữ nguyên từ file cũ của bạn) -->
 <style>
-    /* Grid cho listing page — dùng chung .pc */
-    .product-grid--listing {
-        display: grid !important;
-        grid-template-columns: repeat(4, 1fr);
-        gap: 1.5rem;
-        margin-bottom: 3rem;
-    }
+    .product-grid--listing { display: grid !important; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; margin-bottom: 3rem; }
     @media (max-width: 1080px) { .product-grid--listing { grid-template-columns: repeat(3, 1fr); } }
     @media (max-width: 820px)  { .product-grid--listing { grid-template-columns: repeat(2, 1fr); } }
     @media (max-width: 480px)  { .product-grid--listing { grid-template-columns: 1fr; } }
 
-    /* Badge hết hàng + còn ít */
     .pc__badge--oos { background: #1c1b19; color: #fffdf9; }
     .pc__badge--low { background: #f59e0b; color: #fff; }
-
-    /* Card out-of-stock */
     .pc--oos .pc__img { filter: grayscale(0.6) brightness(0.85); }
     .pc--oos .pc__media-link { cursor: pointer; }
     .pc--oos:hover .pc__img { transform: none; }
 
-.pc__overlay-cta {
-    position: absolute;
-    left: 0.7rem;
-    right: 0.7rem;
-    bottom: 0.7rem;
-    z-index: 5;                     /* ← cao hơn thẻ <a> ảnh */
-    opacity: 0;
-    transform: translateY(10px);
-    transition: opacity 0.3s, transform 0.3s;
-    pointer-events: none;           /* mặc định không cho click */
-}
-.pc:hover .pc__overlay-cta {
-    opacity: 1;
-    transform: translateY(0);
-    pointer-events: auto;           /* ← CHỈ cho click khi đã hiện */
-}
+    .pc__overlay-cta { position: absolute; left: 0.7rem; right: 0.7rem; bottom: 0.7rem; z-index: 5; opacity: 0; transform: translateY(10px); transition: opacity 0.3s, transform 0.3s; pointer-events: none; }
+    .pc:hover .pc__overlay-cta { opacity: 1; transform: translateY(0); pointer-events: auto; }
 
-/* Nút "Xem nhanh" */
-.pc__quick-add {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.5rem;
-    padding: 0.7rem;
-    background: var(--color-white);
-    color: var(--color-ink);
-    font-family: var(--font-mono);
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    border-radius: 6px;
-    cursor: pointer;                /* ← con trỏ pointer */
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    transition: background 0.2s, color 0.2s;
-}
-.pc__quick-add:hover {
-    background: var(--color-ink);
-    color: var(--color-ivory);
-}
-
-    /* Đếm kết quả */
-    .products-count {
-        font-family: var(--font-mono);
-        font-size: 0.82rem;
-        color: var(--color-stone);
-        margin-bottom: 1.25rem;
-        letter-spacing: 0.02em;
-    }
+    .pc__quick-add { display: flex; align-items: center; justify-content: center; gap: 0.5rem; padding: 0.7rem; background: var(--color-white); color: var(--color-ink); font-family: var(--font-mono); font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; border-radius: 6px; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.15); transition: background 0.2s, color 0.2s; }
+    .pc__quick-add:hover { background: var(--color-ink); color: var(--color-ivory); }
+    .products-count { font-family: var(--font-mono); font-size: 0.82rem; color: var(--color-stone); margin-bottom: 1.25rem; letter-spacing: 0.02em; }
     .products-count b { color: var(--color-ink); font-weight: 700; }
 
-    /* Size trong modal */
-    .size-btn span {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        gap: 2px;
-        min-height: 52px;
-        padding: 4px 8px;
-    }
-    .size-btn .size-stock {
-        font-family: var(--font-mono, monospace);
-        font-size: 0.62rem;
-        opacity: 0.7;
-        letter-spacing: 0.02em;
-    }
+    .size-btn span { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 52px; padding: 4px 8px; }
+    .size-btn .size-stock { font-family: var(--font-mono, monospace); font-size: 0.62rem; opacity: 0.7; letter-spacing: 0.02em; }
     .size-btn.is-disabled { opacity: 0.35; cursor: not-allowed; }
     .size-btn.is-disabled span { text-decoration: line-through; }
     .size-btn.is-disabled input { pointer-events: none; }
@@ -650,9 +614,7 @@ include 'includes/header.php';
 <script src="js/chatbot.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', () => {
-    /* ============================================================
-       HERO SLIDER
-       ============================================================ */
+    // (Giữ nguyên toàn bộ logic JS cũ của bạn: Slider, Modal Quick View, AJAX Add to Cart...)
     const slides = document.querySelectorAll('.slide');
     const dots = document.querySelectorAll('.dot');
     let currentSlide = 0;
@@ -683,9 +645,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    /* ============================================================
-       QUICK VIEW MODAL
-       ============================================================ */
     const modal = document.getElementById('quickViewModal');
     const closeModalBtn = document.getElementById('closeModalBtn');
     const quickViewTriggers = document.querySelectorAll('.quick-view-trigger');
@@ -699,7 +658,6 @@ document.addEventListener('DOMContentLoaded', () => {
         trigger.addEventListener('click', () => {
             try {
                 const data = JSON.parse(trigger.dataset.product);
-
                 document.getElementById('modalProductId').value           = data.id;
                 document.getElementById('modalProductName').textContent   = data.name;
                 document.getElementById('modalProductCategory').textContent = data.category;
@@ -709,7 +667,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.getElementById('modalProductDesc').textContent   = data.description;
 
                 currentStocks = data.stocks || {};
-
                 updateSizeStockUI();
                 qtyInput.value = 1;
                 selectFirstAvailableSize();
@@ -717,9 +674,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 modal.classList.add('show');
                 modal.setAttribute('aria-hidden', 'false');
                 document.body.style.overflow = 'hidden';
-            } catch (err) {
-                console.error('JSON parse error:', err);
-            }
+            } catch (err) { console.error('JSON parse error:', err); }
         });
     });
 
@@ -729,19 +684,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const stock = parseInt(currentStocks[size] || 0);
             const isDisabled = stock <= 0;
             const radio = btn.querySelector('input[type="radio"]');
-
             const stockEl = btn.querySelector('.size-stock');
-            if (stockEl) {
-                stockEl.textContent = isDisabled ? 'Hết' : '(' + stock + ')';
-            }
-
+            if (stockEl) stockEl.textContent = isDisabled ? 'Hết' : '(' + stock + ')';
             btn.classList.toggle('is-disabled', isDisabled);
-            if (isDisabled) {
-                radio.disabled = true;
-                radio.checked = false;
-            } else {
-                radio.disabled = false;
-            }
+            if (isDisabled) { radio.disabled = true; radio.checked = false; }
+            else { radio.disabled = false; }
         });
     }
 
@@ -750,10 +697,7 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const sz of order) {
             if ((currentStocks[sz] || 0) > 0) {
                 const radio = document.querySelector(`#modalSizeOptions input[value="${sz}"]`);
-                if (radio) {
-                    radio.checked = true;
-                    break;
-                }
+                if (radio) { radio.checked = true; break; }
             }
         }
         updateQtyLimit();
@@ -764,41 +708,24 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!checked) {
             qtyInput.disabled = true;
             qtyInput.value = 1;
-            if (modalStockNote) {
-                modalStockNote.textContent = '⚠️ Không có size nào còn hàng';
-                modalStockNote.style.color = '#b91c1c';
-            }
+            if (modalStockNote) { modalStockNote.textContent = '⚠️ Không có size nào còn hàng'; modalStockNote.style.color = '#b91c1c'; }
             document.getElementById('btnSubmitCart').disabled = true;
             return;
         }
-
         const size = checked.value;
         const stock = parseInt(currentStocks[size] || 0);
-
         document.getElementById('btnSubmitCart').disabled = false;
 
         if (stock <= 0) {
-            qtyInput.max = 1;
-            qtyInput.value = 1;
-            qtyInput.disabled = true;
-            if (modalStockNote) {
-                modalStockNote.textContent = '⚠️ Size ' + size + ' đã hết hàng';
-                modalStockNote.style.color = '#b91c1c';
-            }
+            qtyInput.max = 1; qtyInput.value = 1; qtyInput.disabled = true;
+            if (modalStockNote) { modalStockNote.textContent = '⚠️ Size ' + size + ' đã hết hàng'; modalStockNote.style.color = '#b91c1c'; }
         } else {
             qtyInput.disabled = false;
             qtyInput.max = stock;
-            if (parseInt(qtyInput.value) > stock) {
-                qtyInput.value = stock;
-            }
+            if (parseInt(qtyInput.value) > stock) qtyInput.value = stock;
             if (modalStockNote) {
-                if (stock <= 5) {
-                    modalStockNote.textContent = '🔥 Chỉ còn ' + stock + ' sản phẩm size ' + size;
-                    modalStockNote.style.color = '#d97706';
-                } else {
-                    modalStockNote.textContent = '✓ Còn ' + stock + ' sản phẩm size ' + size;
-                    modalStockNote.style.color = '#166534';
-                }
+                if (stock <= 5) { modalStockNote.textContent = '🔥 Chỉ còn ' + stock + ' sản phẩm size ' + size; modalStockNote.style.color = '#d97706'; }
+                else { modalStockNote.textContent = '✓ Còn ' + stock + ' sản phẩm size ' + size; modalStockNote.style.color = '#166534'; }
             }
         }
     }
@@ -814,9 +741,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     closeModalBtn?.addEventListener('click', closeModal);
-    modal?.addEventListener('click', (e) => {
-        if (e.target === modal) closeModal();
-    });
+    modal?.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
 
     document.getElementById('qtyMinus')?.addEventListener('click', () => {
         let val = parseInt(qtyInput.value) || 1;
@@ -835,47 +760,30 @@ document.addEventListener('DOMContentLoaded', () => {
         if (val < 1) this.value = 1;
     });
 
-    /* ============================================================
-       TOAST
-       ============================================================ */
     function showToast(message, isError) {
         const toast = document.createElement('div');
         toast.className = 'toast-notification' + (isError ? ' error' : '');
-        toast.innerHTML = `<span>${isError ? '⚠' : '✓'}</span> ${message}`;
+        toast.innerHTML = `<span>${isError ? '<i class="ph ph-warning"></i>' : '<i class="ph ph-check"></i>'}</span> ${message}`;
         document.body.appendChild(toast);
-
         setTimeout(() => toast.classList.add('show'), 10);
-        setTimeout(() => {
-            toast.classList.remove('show');
-            setTimeout(() => toast.remove(), 300);
-        }, 3000);
+        setTimeout(() => { toast.classList.remove('show'); setTimeout(() => toast.remove(), 300); }, 3000);
     }
 
-    /* ============================================================
-       AJAX ADD TO CART
-       ============================================================ */
     const quickAddToCartForm = document.getElementById('quickAddToCartForm');
     quickAddToCartForm?.addEventListener('submit', function (e) {
         e.preventDefault();
-
         const submitBtn = document.getElementById('btnSubmitCart');
         const originalText = submitBtn.innerHTML;
         submitBtn.disabled = true;
         submitBtn.innerHTML = 'Đang xử lý...';
 
-        fetch('products.php', {
-            method: 'POST',
-            body: new FormData(this)
-        })
+        fetch('products.php', { method: 'POST', body: new FormData(this) })
         .then(res => res.json())
         .then(data => {
             if (data.success) {
                 showToast(data.message, false);
                 closeModal();
-
-                document.querySelectorAll('.cart-count, #cartBadge, .badge-cart').forEach(badge => {
-                    badge.textContent = data.total_items;
-                });
+                document.querySelectorAll('.cart-count, #cartBadge, .badge-cart').forEach(badge => { badge.textContent = data.total_items; });
             } else {
                 showToast(data.message || 'Có lỗi xảy ra.', true);
                 submitBtn.disabled = false;

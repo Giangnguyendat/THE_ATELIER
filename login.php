@@ -1,13 +1,19 @@
 <?php
 require_once 'includes/config.php';
 
-// Nếu đã đăng nhập rồi thì điều hướng thẳng theo vai trò, không cho ở lại trang login nữa
+// Nếu đã đăng nhập rồi thì điều hướng thẳng theo vai trò
 if (isLoggedIn()) {
     if (isset($_SESSION['role']) && $_SESSION['role'] === 'admin') {
         header('Location: admin/index.php');
     } else {
         header('Location: index.php');
     }
+    exit;
+}
+
+// Nếu đang có phiên OTP Admin chờ xác thực → chuyển sang trang verify
+if (!empty($_SESSION['admin_otp_pending'])) {
+    header('Location: includes/admin-otp-verify.php');
     exit;
 }
 
@@ -21,13 +27,13 @@ $email = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $token = $_POST['csrf_token'] ?? '';
-    
+
     if (!hash_equals($_SESSION['csrf_token'], $token)) {
         $error = 'Yêu cầu không hợp lệ hoặc đã hết hạn (CSRF Token)';
     } else {
-        $email = trim($_POST['email'] ?? '');
+        $email    = trim($_POST['email'] ?? '');
         $password = $_POST['password'] ?? '';
-        
+
         if (empty($email) || empty($password)) {
             $error = 'Vui lòng nhập đầy đủ email và mật khẩu';
         } else {
@@ -37,65 +43,74 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($user && password_verify($password, $user['password_hash'])) {
 
-    // ✅ LƯU giỏ guest lại trước khi reset session
-    $guestCart = [];
-    if (!empty($_SESSION['cart']) && is_array($_SESSION['cart'])) {
-        $guestCart = $_SESSION['cart'];
-    }
+                // ============================================================
+                // 🔒 ADMIN: BẮT BUỘC XÁC THỰC OTP EMAIL
+                // ============================================================
+                if (strtolower($user['role'] ?? '') === 'admin') {
+                    require_once __DIR__ . '/includes/admin_otp_helper.php';
 
-    $_SESSION = [];
-    session_regenerate_id(true);
+                    // KHÔNG reset $_SESSION để giữ giỏ guest
+                    $otp  = adminOtpInitSession($user);
+                    $sent = adminOtpSendEmail($user['email'], $user['full_name'] ?? 'Admin', $otp);
 
-    $_SESSION['user_id']   = $user['id'];
-    $_SESSION['full_name'] = $user['full_name'];
-    $_SESSION['role']      = $user['role'];
-    $_SESSION['user']      = $user;
-    $_SESSION['email']     = $user['email'];
-
-    unset($_SESSION['csrf_token']);
-
-    // ✅ Khôi phục giỏ hàng CỦA USER này từ DB (nếu có)
-    require_once __DIR__ . '/includes/cart_storage.php';
-    restoreCartFromDb($pdo);
-
-    // ✅ Merge giỏ guest (nếu có) vào giỏ user
-    if (!empty($guestCart)) {
-        if (empty($_SESSION['cart'])) {
-            $_SESSION['cart'] = $guestCart;
-        } else {
-            foreach ($guestCart as $key => $item) {
-                if (isset($_SESSION['cart'][$key])) {
-                    $_SESSION['cart'][$key]['quantity'] += (int)$item['quantity'];
+                    if (!$sent) {
+                        unset($_SESSION['admin_otp_pending']);
+                        $error = 'Không thể gửi mã OTP đến email quản trị. Vui lòng thử lại hoặc liên hệ kỹ thuật.';
+                    } else {
+                        // Chuyển sang file verify trong thư mục includes
+                        header('Location: includes/admin-otp-verify.php');
+                        exit;
+                    }
                 } else {
-                    $_SESSION['cart'][$key] = $item;
+                    // ========================================================
+                    // 👤 USER THƯỜNG: FLOW ĐĂNG NHẬP CŨ
+                    // ========================================================
+                    $guestCart = [];
+                    if (!empty($_SESSION['cart']) && is_array($_SESSION['cart'])) {
+                        $guestCart = $_SESSION['cart'];
+                    }
+
+                    $_SESSION = [];
+                    session_regenerate_id(true);
+
+                    $_SESSION['user_id']   = $user['id'];
+                    $_SESSION['full_name'] = $user['full_name'];
+                    $_SESSION['role']      = $user['role'];
+                    $_SESSION['user']      = $user;
+                    $_SESSION['email']     = $user['email'];
+
+                    unset($_SESSION['csrf_token']);
+
+                    require_once __DIR__ . '/includes/cart_storage.php';
+                    restoreCartFromDb($pdo);
+
+                    if (!empty($guestCart)) {
+                        if (empty($_SESSION['cart'])) {
+                            $_SESSION['cart'] = $guestCart;
+                        } else {
+                            foreach ($guestCart as $key => $item) {
+                                if (isset($_SESSION['cart'][$key])) {
+                                    $_SESSION['cart'][$key]['quantity'] += (int)$item['quantity'];
+                                } else {
+                                    $_SESSION['cart'][$key] = $item;
+                                }
+                            }
+                        }
+
+                        if (!empty($_COOKIE['guest_id'])) {
+                            $guestKey = 'guest_' . preg_replace('/[^a-f0-9]/', '', $_COOKIE['guest_id']);
+                            try {
+                                $pdo->prepare("DELETE FROM cart_storage WHERE owner_key = ?")->execute([$guestKey]);
+                            } catch (Exception $e) {}
+                            setcookie('guest_id', '', time() - 3600, '/');
+                            unset($_COOKIE['guest_id']);
+                        }
+                    }
+                    saveCartToDb($pdo);
+
+                    header('Location: index.php');
+                    exit;
                 }
-            }
-        }
-
-        // Xóa giỏ guest khỏi DB
-        if (!empty($_COOKIE['guest_id'])) {
-            $guestKey = 'guest_' . preg_replace('/[^a-f0-9]/', '', $_COOKIE['guest_id']);
-            try {
-                $pdo->prepare("DELETE FROM cart_storage WHERE owner_key = ?")->execute([$guestKey]);
-            } catch (Exception $e) {}
-            // Xóa cookie guest
-            setcookie('guest_id', '', time() - 3600, '/');
-            unset($_COOKIE['guest_id']);
-        }
-    }
-
-    // Lưu giỏ (đã merge) vào DB cho user
-    saveCartToDb($pdo);
-
-    // ... redirect
-
-                // === PHẦN PHÂN QUYỀN ĐIỀU HƯỚNG TẠI ĐÂY ===
-                if ($user['role'] === 'admin') {
-                    header('Location: admin/index.php'); // Admin vào trang quản trị
-                } else {
-                    header('Location: index.php');       // Khách hàng vào trang chủ
-                }
-                exit;
 
             } else {
                 $error = 'Email hoặc mật khẩu không chính xác';
@@ -109,7 +124,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <main class="auth-page-wrapper">
     <div class="auth-container">
         <div class="auth-card">
-            
+
             <header class="auth-header">
                 <h1 class="auth-title">Đăng Nhập</h1>
                 <p class="auth-subtitle">Chào mừng bạn quay trở lại</p>

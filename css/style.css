@@ -5323,6 +5323,41 @@ img, video, iframe {
 .btn-checkout:hover:not(:disabled)::after {
     transform: translateX(4px);
 }
+.cb-thinking {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: #f2ece0;
+    border-radius: 14px;
+    font-size: 0.86rem;
+    color: #8a8377;
+    margin: 0 0 8px 0;
+    max-width: 88%;
+}
+.cb-thinking .cb-think-text {
+    font-style: italic;
+    transition: opacity 0.2s;
+}
+.cb-thinking .cb-dots {
+    display: inline-flex;
+    gap: 3px;
+    flex-shrink: 0;
+}
+.cb-thinking .cb-dots span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #a8461f;
+    animation: cb-think-bounce 1.2s infinite ease-in-out;
+}
+.cb-thinking .cb-dots span:nth-child(2) { animation-delay: 0.15s; }
+.cb-thinking .cb-dots span:nth-child(3) { animation-delay: 0.3s; }
+
+@keyframes cb-think-bounce {
+    0%, 60%, 100% { transform: translateY(0);    opacity: 0.4; }
+    30%           { transform: translateY(-4px); opacity: 1;   }
+}
 /* ==========================================================================
    END
    ========================================================================== */

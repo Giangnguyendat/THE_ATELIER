@@ -58,12 +58,12 @@ function respond($ok, $msg) {
    ============================================================ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-    // 1️⃣ CSRF
+    // 1. CSRF
     if (empty($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
         respond(false, 'Phiên làm việc hết hạn, vui lòng thử lại.');
     }
 
-    // 2️⃣ ✅ YÊU CẦU VERIFY PIN + OTP
+    // 2. YÊU CẦU VERIFY PIN + OTP
     if (empty($_SESSION['settings_pin_verified'])) {
         respond(false, 'Vui lòng xác minh mã PIN trước khi lưu.');
     }
@@ -71,7 +71,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         respond(false, 'Vui lòng xác minh mã OTP trước khi lưu.');
     }
 
-    // 3️⃣ Lấy dữ liệu
+    // 3. Lấy dữ liệu
     $bankBin      = trim($_POST['bank_bin'] ?? '970436');
     $bankName     = trim($_POST['bank_name'] ?? '');
     $accountNo    = trim($_POST['account_no'] ?? '');
@@ -156,10 +156,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $instruction ?: null,
         ]);
 
-        // 4️⃣ ✅ Clear verify sau khi lưu thành công (buộc lần sau verify lại)
+        // 4. Clear verify sau khi lưu thành công
         unset($_SESSION['settings_pin_verified'], $_SESSION['settings_otp_verified']);
 
-        respond(true, '✅ Đã lưu thông tin tài khoản nhận tiền');
+        respond(true, 'Đã lưu thông tin tài khoản nhận tiền');
 
     } catch (Exception $e) {
         respond(false, 'Lỗi: ' . $e->getMessage());
@@ -192,25 +192,96 @@ $flash = $_SESSION['admin_flash'] ?? null;
 unset($_SESSION['admin_flash']);
 ?>
 
+<style>
+/* ============================================================
+   FLASH MESSAGE
+   ============================================================ */
+.adm-flash {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-radius: 8px; margin-bottom: 20px;
+    font-size: 0.9rem;
+}
+.adm-flash i { font-size: 1.15rem; }
+.adm-flash--success { background: #ecfdf5; color: #047857; border-left: 3px solid #16a34a; }
+.adm-flash--error   { background: #fee2e2; color: #b91c1c; border-left: 3px solid #dc2626; }
+
+/* ============================================================
+   SECTION TITLE
+   ============================================================ */
+.adm-section-title {
+    display: flex; align-items: center; gap: 8px;
+    font-family: 'Fraunces', serif;
+    font-size: 1.15rem; font-weight: 600;
+    margin: 0 0 1.5rem; padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--admin-border);
+}
+.adm-section-title i { font-size: 1.2rem; color: #a8461f; }
+
+/* ============================================================
+   BUTTON ICON ALIGNMENT
+   ============================================================ */
+.btn-adm i { vertical-align: -2px; }
+
+/* ============================================================
+   QR PREVIEW EMPTY STATE
+   ============================================================ */
+.qr-empty {
+    text-align: center;
+    color: var(--admin-text-muted);
+    font-size: 0.75rem;
+    padding: 1rem;
+    line-height: 1.5;
+}
+.qr-empty i {
+    font-size: 2.5rem;
+    opacity: 0.35;
+    display: block;
+    margin-bottom: 0.5rem;
+}
+
+/* ============================================================
+   PIN BADGE
+   ============================================================ */
+.badge-pin {
+    display: inline-flex; align-items: center; gap: 5px;
+    margin-left: 8px;
+    padding: 3px 10px;
+    background: #f5f1ea;
+    color: #1c1b19;
+    border: 1px solid var(--admin-border);
+    border-radius: 10px;
+    font-size: 0.72rem;
+    font-weight: 600;
+}
+.badge-pin i { font-size: 0.85rem; color: #a8461f; }
+
+/* ============================================================
+   OTP MODAL ICON (thay emoji bằng Phosphor)
+   ============================================================ */
+.otp-modal__icon i { font-size: 2rem; }
+
+/* ============================================================
+   TOAST ICON
+   ============================================================ */
+#settingsToastIcon i { font-size: 1rem; }
+</style>
+
 <div class="admin-page-head">
     <div>
         <h1>Tài khoản nhận tiền</h1>
         <div class="subtitle">
             Cấu hình ngân hàng và mã QR hiển thị khi khách chọn <b>Chuyển khoản</b>
-            <span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px;
-                         padding:2px 8px;background:#fef3c7;color:#92400e;
-                         border-radius:10px;font-size:0.72rem;font-weight:700;">
-                🔒 Yêu cầu PIN + OTP khi lưu
+            <span class="badge-pin">
+                <i class="ph ph-lock-key"></i> Yêu cầu PIN + OTP khi lưu
             </span>
         </div>
     </div>
 </div>
 
 <?php if ($flash): ?>
-    <div style="padding:12px 16px;border-radius:8px;margin-bottom:20px;
-                background:<?php echo $flash['type'] === 'error' ? '#fee2e2' : '#ecfdf5'; ?>;
-                color:<?php echo $flash['type'] === 'error' ? '#b91c1c' : '#047857'; ?>;">
-        <?php echo htmlspecialchars($flash['msg'], ENT_QUOTES, 'UTF-8'); ?>
+    <div class="adm-flash adm-flash--<?php echo $flash['type'] === 'error' ? 'error' : 'success'; ?>">
+        <i class="ph <?php echo $flash['type'] === 'error' ? 'ph-x-circle' : 'ph-check-circle'; ?>"></i>
+        <span><?php echo htmlspecialchars($flash['msg'], ENT_QUOTES, 'UTF-8'); ?></span>
     </div>
 <?php endif; ?>
 
@@ -219,10 +290,8 @@ unset($_SESSION['admin_flash']);
     <input type="hidden" name="qr_image_current" value="<?php echo htmlspecialchars($bank['qr_image'] ?? ''); ?>">
 
     <div class="admin-card" style="padding:1.75rem;margin-bottom:1.25rem;">
-        <h2 style="font-family:'Fraunces',serif;font-size:1.15rem;font-weight:600;
-                   margin:0 0 1.5rem;padding-bottom:0.75rem;
-                   border-bottom:1px solid var(--admin-border);">
-            🏦 Thông tin ngân hàng
+        <h2 class="adm-section-title">
+            <i class="ph ph-bank"></i> Thông tin ngân hàng
         </h2>
 
         <div class="adm-form-group">
@@ -235,8 +304,10 @@ unset($_SESSION['admin_flash']);
                     </option>
                 <?php endforeach; ?>
             </select>
-            <div style="font-size:0.75rem;color:var(--admin-text-muted);margin-top:6px;">
-                💡 Mã BIN dùng để sinh QR động — nếu bạn upload ảnh QR riêng thì mã này chỉ mang tính tham khảo.
+            <div style="font-size:0.75rem;color:var(--admin-text-muted);margin-top:6px;
+                        display:flex;align-items:flex-start;gap:6px;line-height:1.6;">
+                <i class="ph ph-lightbulb" style="color:#a8461f;font-size:1rem;margin-top:2px;"></i>
+                <span>Mã BIN dùng để sinh QR động — nếu bạn upload ảnh QR riêng thì mã này chỉ mang tính tham khảo.</span>
             </div>
         </div>
 
@@ -277,10 +348,8 @@ unset($_SESSION['admin_flash']);
     </div>
 
     <div class="admin-card" style="padding:1.75rem;margin-bottom:1.25rem;">
-        <h2 style="font-family:'Fraunces',serif;font-size:1.15rem;font-weight:600;
-                   margin:0 0 1rem;padding-bottom:0.75rem;
-                   border-bottom:1px solid var(--admin-border);">
-            📱 Mã QR chuyển khoản
+        <h2 class="adm-section-title">
+            <i class="ph ph-qr-code"></i> Mã QR chuyển khoản
         </h2>
 
         <p style="font-size:0.85rem;color:var(--admin-text-muted);margin:0 0 1.25rem;line-height:1.6;">
@@ -305,8 +374,8 @@ unset($_SESSION['admin_flash']);
                         <img id="qrPreviewImg" src="../<?php echo htmlspecialchars($bank['qr_image']); ?>"
                              alt="QR" style="width:100%;height:100%;object-fit:contain;padding:10px;background:#fff;">
                     <?php else: ?>
-                        <div id="qrPreviewEmpty" style="text-align:center;color:var(--admin-text-muted);font-size:0.75rem;padding:1rem;line-height:1.5;">
-                            <div style="font-size:2.5rem;margin-bottom:0.5rem;opacity:0.35;">📷</div>
+                        <div id="qrPreviewEmpty" class="qr-empty">
+                            <i class="ph ph-image"></i>
                             Chưa có ảnh QR<br>
                             <span style="font-size:0.68rem;opacity:0.7;">(Đang dùng QR động)</span>
                         </div>
@@ -336,7 +405,7 @@ unset($_SESSION['admin_flash']);
                                   padding:0.6rem 0.9rem;background:#fef2f2;border-radius:6px;
                                   border:1px solid #fecaca;">
                         <input type="checkbox" name="delete_qr" value="1">
-                        🗑 Xóa ảnh QR hiện tại (chuyển về QR động)
+                        <i class="ph ph-trash"></i> Xóa ảnh QR hiện tại (chuyển về QR động)
                     </label>
                 <?php endif; ?>
             </div>
@@ -348,10 +417,10 @@ unset($_SESSION['admin_flash']);
                 border-top:1px solid var(--admin-border);
                 display:flex;gap:0.75rem;justify-content:flex-end;">
         <button type="reset" class="btn-adm btn-adm--ghost" style="padding:0.85rem 1.5rem;">
-            Khôi phục
+            <i class="ph ph-arrow-counter-clockwise"></i> Khôi phục
         </button>
         <button type="submit" class="btn-adm btn-adm--primary" style="padding:0.85rem 2rem;">
-            🔒 Lưu thay đổi (PIN + OTP)
+            <i class="ph ph-lock-key"></i> Lưu thay đổi (PIN + OTP)
         </button>
     </div>
 </form>
@@ -361,9 +430,13 @@ unset($_SESSION['admin_flash']);
 <!-- ============================================================ -->
 <div class="otp-modal-overlay" id="pinModal" aria-hidden="true">
     <div class="otp-modal" role="dialog" aria-modal="true">
-        <button type="button" class="otp-modal__close" id="pinCloseBtn" aria-label="Đóng">&times;</button>
+        <button type="button" class="otp-modal__close" id="pinCloseBtn" aria-label="Đóng">
+            <i class="ph ph-x"></i>
+        </button>
 
-        <div class="otp-modal__icon" id="pinIcon">🔐</div>
+        <div class="otp-modal__icon" id="pinIcon">
+            <i class="ph ph-lock-key"></i>
+        </div>
         <h2 class="otp-modal__title" id="pinTitle">Xác minh mã PIN</h2>
         <p class="otp-modal__subtitle" id="pinSubtitle">
             Nhập mã PIN 6 số để xác nhận thay đổi
@@ -419,9 +492,13 @@ unset($_SESSION['admin_flash']);
 <!-- ============================================================ -->
 <div class="otp-modal-overlay" id="otpModal" aria-hidden="true">
     <div class="otp-modal" role="dialog" aria-modal="true">
-        <button type="button" class="otp-modal__close" id="otpCloseBtn" aria-label="Đóng">&times;</button>
+        <button type="button" class="otp-modal__close" id="otpCloseBtn" aria-label="Đóng">
+            <i class="ph ph-x"></i>
+        </button>
 
-        <div class="otp-modal__icon">📧</div>
+        <div class="otp-modal__icon">
+            <i class="ph ph-envelope"></i>
+        </div>
         <h2 class="otp-modal__title">Xác minh OTP</h2>
         <p class="otp-modal__subtitle">
             Mã OTP đã được gửi tới email<br>
@@ -468,7 +545,9 @@ unset($_SESSION['admin_flash']);
     <span id="settingsToastIcon" style="
         display:inline-flex;align-items:center;justify-content:center;
         width:24px;height:24px;background:rgba(255,255,255,0.2);
-        border-radius:50%;font-weight:700;flex:none;">✓</span>
+        border-radius:50%;flex:none;">
+        <i class="ph ph-check" style="font-size:1rem;"></i>
+    </span>
     <span id="settingsToastMsg">Thành công!</span>
 </div>
 
@@ -526,7 +605,7 @@ unset($_SESSION['admin_flash']);
     }
     function showSuccess(text, sub) {
         loadingBox.classList.add('is-success');
-        loadingText.textContent = text || '✅ Thành công!';
+        loadingText.textContent = text || 'Thành công!';
         loadingSub.textContent  = sub || '';
         loadingOv.classList.add('show');
     }
@@ -540,7 +619,9 @@ unset($_SESSION['admin_flash']);
         var t = document.getElementById('settingsToast');
         var i = document.getElementById('settingsToastIcon');
         var m = document.getElementById('settingsToastMsg');
-        i.textContent = isError ? '⚠' : '✓';
+        i.innerHTML = isError
+            ? '<i class="ph ph-warning" style="font-size:1rem;"></i>'
+            : '<i class="ph ph-check" style="font-size:1rem;"></i>';
         m.textContent = msg;
         t.style.background = isError ? '#b91c1c' : '#166534';
         t.hidden = false;
@@ -639,14 +720,14 @@ unset($_SESSION['admin_flash']);
             pinMode = pinHasPin ? 'verify' : 'setup';
 
             if (pinMode === 'verify') {
-                pinIcon.textContent = '🔐';
+                pinIcon.innerHTML = '<i class="ph ph-lock-key"></i>';
                 pinTitle.textContent = 'Xác minh mã PIN';
                 pinSubtitle.textContent = 'Nhập mã PIN 6 số để xác nhận thay đổi';
                 pinVerifyBlock.hidden = false;
                 pinSetupBlock.hidden = true;
                 setTimeout(function () { pinInputsVerify[0]?.focus(); }, 300);
             } else {
-                pinIcon.textContent = '🆕';
+                pinIcon.innerHTML = '<i class="ph ph-plus-circle"></i>';
                 pinTitle.textContent = 'Thiết lập mã PIN';
                 pinSubtitle.textContent = 'Đây là lần đầu bạn dùng. Vui lòng tạo mã PIN 6 số.';
                 pinVerifyBlock.hidden = true;
@@ -765,7 +846,6 @@ unset($_SESSION['admin_flash']);
             });
             return;
         }
-        // Đã verify cả 2 → submit thật
         submitForm();
     });
 
@@ -801,7 +881,7 @@ unset($_SESSION['admin_flash']);
             if (data.ok) {
                 pinVerified = true;
                 closePinModal();
-                showToast('✅ Xác minh PIN thành công — đang gửi OTP...', false);
+                showToast('Xác minh PIN thành công — đang gửi OTP...', false);
 
                 showLoading('Đang gửi OTP...', 'Vui lòng chờ trong giây lát');
                 delayThen(1500, function () {
@@ -856,7 +936,7 @@ unset($_SESSION['admin_flash']);
             if (data.ok) {
                 otpVerified = true;
                 closeOtpModal();
-                showSuccess('✅ Đã xác minh!', 'Đang lưu thay đổi...');
+                showSuccess('Đã xác minh!', 'Đang lưu thay đổi...');
                 delayThen(1200, function () {
                     hideLoading();
                     submitForm();
@@ -901,7 +981,7 @@ unset($_SESSION['admin_flash']);
         .then(function (r) { return r.json(); })
         .then(function (data) {
             if (data.ok) {
-                showToast(data.msg || '✅ Đã lưu thành công!', false);
+                showToast(data.msg || 'Đã lưu thành công!', false);
                 setTimeout(function () { location.reload(); }, 1500);
             } else {
                 showToast(data.msg || 'Có lỗi xảy ra.', true);
@@ -932,7 +1012,9 @@ unset($_SESSION['admin_flash']);
 
         if (qrInfo) {
             qrInfo.style.display = 'block';
-            qrInfo.innerHTML = '📎 <b>' + file.name + '</b> (' + Math.round(file.size / 1024) + ' KB)';
+            qrInfo.innerHTML =
+                '<i class="ph ph-paperclip" style="vertical-align:-2px"></i> ' +
+                '<b>' + file.name + '</b> (' + Math.round(file.size / 1024) + ' KB)';
         }
 
         var reader = new FileReader();

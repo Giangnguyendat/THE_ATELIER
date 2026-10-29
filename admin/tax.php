@@ -68,7 +68,6 @@ function fmtMoney($n) {
 }
 
 function calcPeriodRange(string $type, string $value): array {
-    // $value: "2026-01" (month) | "2026-Q1" (quarter) | "2026" (year)
     if ($type === 'month') {
         $ts = strtotime($value . '-01');
         return [date('Y-m-01', $ts), date('Y-m-t', $ts)];
@@ -83,9 +82,16 @@ function calcPeriodRange(string $type, string $value): array {
             date('Y-m-t', strtotime(sprintf('%04d-%02d-01', $y, $endMonth))),
         ];
     }
-    // year
     $y = (int)$value;
     return ["$y-01-01", "$y-12-31"];
+}
+
+/** Lấy field đầu tiên có giá trị trong danh sách keys (dùng khi tên cột có thể khác nhau) */
+function pickField(array $row, array $keys, $default = '') {
+    foreach ($keys as $k) {
+        if (isset($row[$k]) && $row[$k] !== '') return $row[$k];
+    }
+    return $default;
 }
 
 /* ============================================================
@@ -96,7 +102,6 @@ unset($_SESSION['admin_flash']);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
-    // CSRF
     if (empty($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
         $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Phiên làm việc hết hạn.'];
         header('Location: tax.php'); exit;
@@ -104,7 +109,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $action = $_POST['action'] ?? '';
 
-    /* ========== 1. LƯU CẤU HÌNH ========== */
+    /* ---------- 1. LƯU CẤU HÌNH ---------- */
     if ($action === 'save_settings') {
         $taxCode      = trim($_POST['tax_code'] ?? '');
         $businessName = trim($_POST['business_name'] ?? '');
@@ -131,14 +136,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $taxCode ?: null, $businessName ?: null, $taxOffice ?: null,
                 $threshold, $vatRate, $pitRate, $period, $isRegistered,
             ]);
-            $_SESSION['admin_flash'] = ['type' => 'success', 'msg' => '✅ Đã lưu cấu hình thuế'];
+            $_SESSION['admin_flash'] = ['type' => 'success', 'msg' => 'Đã lưu cấu hình thuế'];
         } catch (Exception $e) {
             $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Lỗi: ' . $e->getMessage()];
         }
         header('Location: tax.php'); exit;
     }
 
-    /* ========== 2. TẠO BÁO CÁO THUẾ ========== */
+    /* ---------- 2. TẠO BÁO CÁO THUẾ ---------- */
     if ($action === 'create_report') {
         $periodType  = $_POST['period_type'] ?? 'quarter';
         $periodValue = trim($_POST['period_value'] ?? '');
@@ -153,13 +158,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         [$start, $end] = calcPeriodRange($periodType, $periodValue);
 
-        // Lấy settings
         $settings = $pdo->query("SELECT * FROM tax_settings WHERE id = 1")->fetch(PDO::FETCH_ASSOC) ?: [];
         $threshold = (float)($settings['exempt_threshold'] ?? 500000000);
         $vatRate   = (float)($settings['vat_rate_goods']   ?? 1);
         $pitRate   = (float)($settings['pit_rate_goods']   ?? 0.5);
 
-        // Doanh thu kỳ này
         $stmt = $pdo->prepare("
             SELECT COALESCE(SUM(total_amount), 0)
             FROM orders
@@ -169,7 +172,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$start, $end]);
         $periodRevenue = (float)$stmt->fetchColumn();
 
-        // Doanh thu cả năm của kỳ (để xác định ngưỡng)
         $year = (int)date('Y', strtotime($start));
         $stmtY = $pdo->prepare("
             SELECT COALESCE(SUM(total_amount), 0)
@@ -180,20 +182,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmtY->execute([$year]);
         $yearRevenue = (float)$stmtY->fetchColumn();
 
-        // Tính thuế
         if ($yearRevenue <= $threshold) {
-            // Cả năm chưa vượt ngưỡng → miễn thuế
             $exemptAmount   = $periodRevenue;
             $taxableRevenue = 0;
         } else {
-            // Vượt ngưỡng → tính trên phần vượt (phân bổ tỷ lệ theo kỳ)
-            // Đơn giản: tính tỷ lệ doanh thu kỳ / doanh thu năm × phần vượt
             $overAmount = $yearRevenue - $threshold;
-            if ($yearRevenue > 0) {
-                $shareRatio = $periodRevenue / $yearRevenue;
-            } else {
-                $shareRatio = 0;
-            }
+            $shareRatio = $yearRevenue > 0 ? $periodRevenue / $yearRevenue : 0;
             $taxableRevenue = round($overAmount * $shareRatio);
             $exemptAmount   = $periodRevenue - $taxableRevenue;
         }
@@ -222,14 +216,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $periodRevenue, $exemptAmount, $taxableRevenue,
                 $vatAmount, $pitAmount, $totalTax,
             ]);
-            $_SESSION['admin_flash'] = ['type' => 'success', 'msg' => '✅ Đã tạo/cập nhật báo cáo kỳ ' . $periodValue];
+            $_SESSION['admin_flash'] = ['type' => 'success', 'msg' => 'Đã tạo/cập nhật báo cáo kỳ ' . $periodValue];
         } catch (Exception $e) {
             $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Lỗi: ' . $e->getMessage()];
         }
         header('Location: tax.php'); exit;
     }
 
-    /* ========== 3. ĐỔI TRẠNG THÁI BÁO CÁO ========== */
+    /* ---------- 3. ĐỔI TRẠNG THÁI BÁO CÁO ---------- */
     if ($action === 'update_status') {
         $reportId = (int)($_POST['report_id'] ?? 0);
         $status   = $_POST['status'] ?? 'draft';
@@ -244,19 +238,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 SET status = ?, declared_at = COALESCE(?, declared_at), paid_at = COALESCE(?, paid_at)
                 WHERE id = ?
             ")->execute([$status, $declaredAt, $paidAt, $reportId]);
-            $_SESSION['admin_flash'] = ['type' => 'success', 'msg' => '✅ Đã cập nhật trạng thái'];
+            $_SESSION['admin_flash'] = ['type' => 'success', 'msg' => 'Đã cập nhật trạng thái'];
         } catch (Exception $e) {
             $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Lỗi: ' . $e->getMessage()];
         }
         header('Location: tax.php'); exit;
     }
 
-    /* ========== 4. XÓA BÁO CÁO ========== */
+    /* ---------- 4. XÓA BÁO CÁO ---------- */
     if ($action === 'delete_report') {
         $reportId = (int)($_POST['report_id'] ?? 0);
         try {
             $pdo->prepare("DELETE FROM tax_reports WHERE id = ?")->execute([$reportId]);
-            $_SESSION['admin_flash'] = ['type' => 'success', 'msg' => '🗑 Đã xóa báo cáo'];
+            $_SESSION['admin_flash'] = ['type' => 'success', 'msg' => 'Đã xóa báo cáo'];
         } catch (Exception $e) {
             $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Lỗi: ' . $e->getMessage()];
         }
@@ -265,7 +259,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 /* ============================================================
-   LẤY DỮ LIỆU HIỂN THỊ
+   LẤY DỮ LIỆU TAB THUẾ
    ============================================================ */
 $settings = $pdo->query("SELECT * FROM tax_settings WHERE id = 1 LIMIT 1")->fetch(PDO::FETCH_ASSOC) ?: [];
 
@@ -273,7 +267,6 @@ $threshold = (float)($settings['exempt_threshold'] ?? 500000000);
 $vatRate   = (float)($settings['vat_rate_goods']   ?? 1);
 $pitRate   = (float)($settings['pit_rate_goods']   ?? 0.5);
 
-// Doanh thu năm hiện tại
 $currentYear = (int)date('Y');
 $stmt = $pdo->prepare("
     SELECT COALESCE(SUM(total_amount), 0)
@@ -284,7 +277,6 @@ $stmt = $pdo->prepare("
 $stmt->execute([$currentYear]);
 $yearRevenue = (float)$stmt->fetchColumn();
 
-// Doanh thu tháng hiện tại
 $stmt = $pdo->prepare("
     SELECT COALESCE(SUM(total_amount), 0)
     FROM orders
@@ -294,22 +286,18 @@ $stmt = $pdo->prepare("
 $stmt->execute([(int)date('m'), $currentYear]);
 $monthRevenue = (float)$stmt->fetchColumn();
 
-// % ngưỡng đã dùng
 $usedPct = $threshold > 0 ? min(100, $yearRevenue / $threshold * 100) : 0;
 
-// Phân loại màu progress bar
 $barColor = '#16a34a';
 $barLabel = 'An toàn';
-if ($usedPct >= 100)      { $barColor = '#dc2626'; $barLabel = 'ĐÃ VƯỢT NGƯỠNG — Phải nộp thuế'; }
-elseif ($usedPct >= 80)   { $barColor = '#d97706'; $barLabel = 'Sắp chạm ngưỡng — Cần chú ý'; }
+if ($usedPct >= 100)      { $barColor = '#dc2626'; $barLabel = 'Đã vượt ngưỡng — phải nộp thuế'; }
+elseif ($usedPct >= 80)   { $barColor = '#d97706'; $barLabel = 'Sắp chạm ngưỡng — cần chú ý'; }
 elseif ($usedPct >= 50)   { $barColor = '#0891b2'; $barLabel = 'Đang trong vùng an toàn'; }
 
-// Lịch sử báo cáo
 $reports = $pdo->query("
     SELECT * FROM tax_reports ORDER BY period_start DESC, id DESC LIMIT 50
 ")->fetchAll(PDO::FETCH_ASSOC);
 
-// Tổng đã nộp năm nay
 $stmt = $pdo->prepare("
     SELECT COALESCE(SUM(total_tax), 0)
     FROM tax_reports
@@ -318,7 +306,6 @@ $stmt = $pdo->prepare("
 $stmt->execute([$currentYear]);
 $yearPaidTax = (float)$stmt->fetchColumn();
 
-// Gợi ý kỳ tiếp theo
 $nextValue = '';
 $nextType  = 'quarter';
 if ($usedPct >= 100) {
@@ -332,59 +319,291 @@ $statusMap = [
     'declared' => ['label' => 'Đã kê khai', 'bg' => '#dbeafe', 'color' => '#2563eb'],
     'paid'     => ['label' => 'Đã nộp',     'bg' => '#dcfce7', 'color' => '#16a34a'],
 ];
+
+/* ============================================================
+   LẤY DỮ LIỆU TAB DOANH THU
+   ============================================================ */
+
+// Tự dò cột payment method
+$pmCol = null;
+foreach (['payment_method', 'payment_type', 'payment_gateway', 'payment'] as $col) {
+    try {
+        $pdo->query("SELECT $col FROM orders LIMIT 1");
+        $pmCol = $col;
+        break;
+    } catch (Exception $e) { /* thử cột kế tiếp */ }
+}
+if (!$pmCol) $pmCol = 'payment_method';
+
+$methodMeta = [
+    'cod'      => ['label' => 'Tiền mặt',      'icon' => 'ph-money'],
+    'cash'     => ['label' => 'Tiền mặt',      'icon' => 'ph-money'],
+    'bank'     => ['label' => 'Chuyển khoản',  'icon' => 'ph-bank'],
+    'transfer' => ['label' => 'Chuyển khoản',  'icon' => 'ph-bank'],
+    'card'     => ['label' => 'Ví / Thẻ',      'icon' => 'ph-credit-card'],
+    'wallet'   => ['label' => 'Ví điện tử',    'icon' => 'ph-wallet'],
+];
+$metaFor = function ($m) use ($methodMeta) {
+    return $methodMeta[$m] ?? ['label' => $m ?: 'Khác', 'icon' => 'ph-receipt'];
+};
+
+$orderStatusMap = [
+    'pending'   => ['label' => 'Chờ xác nhận', 'bg' => '#fef3c7', 'color' => '#92400e'],
+    'confirmed' => ['label' => 'Đã xác nhận',  'bg' => '#dbeafe', 'color' => '#1e40af'],
+    'preparing' => ['label' => 'Chuẩn bị hàng','bg' => '#e0e7ff', 'color' => '#3730a3'],
+    'shipped'   => ['label' => 'Đang giao',    'bg' => '#cffafe', 'color' => '#0e7490'],
+    'delivered' => ['label' => 'Đã giao',      'bg' => '#dcfce7', 'color' => '#166534'],
+    'completed' => ['label' => 'Hoàn thành',   'bg' => '#dcfce7', 'color' => '#166534'],
+    'cancelled' => ['label' => 'Đã hủy',       'bg' => '#fee2e2', 'color' => '#991b1b'],
+    'returned'  => ['label' => 'Trả hàng',     'bg' => '#fce7f3', 'color' => '#9d174d'],
+];
+$payStatusMap = [
+    'unpaid'   => ['label' => 'Chưa TT',  'bg' => '#fef3c7', 'color' => '#92400e'],
+    'paid'     => ['label' => 'Đã TT',    'bg' => '#dcfce7', 'color' => '#166534'],
+    'refunded' => ['label' => 'Hoàn tiền','bg' => '#e9d5ff', 'color' => '#6b21a8'],
+    'partial'  => ['label' => 'Một phần', 'bg' => '#fef9c3', 'color' => '#854d0e'],
+];
+
+$revFrom   = $_GET['rev_from']   ?? date('Y-m-01');
+$revTo     = $_GET['rev_to']     ?? date('Y-m-t');
+$revMethod = trim($_GET['rev_method'] ?? '');
+$revStatus = trim($_GET['rev_status'] ?? '');
+
+if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $revFrom)) $revFrom = date('Y-m-01');
+if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $revTo))   $revTo   = date('Y-m-t');
+
+// Xác định tab đang mở
+$activeTab = $_GET['tab'] ?? 'revenue';
+if (!in_array($activeTab, ['tax', 'revenue'], true)) $activeTab = 'tax';
+if (!empty($_GET['rev_from']) || !empty($_GET['rev_to'])
+    || $revMethod !== '' || $revStatus !== '') {
+    $activeTab = 'revenue';
+}
+
+// Build query doanh thu
+$whereRev  = "WHERE DATE(o.created_at) BETWEEN ? AND ?";
+$paramsRev = [$revFrom, $revTo];
+
+if ($revMethod !== '') {
+    $whereRev .= " AND o.{$pmCol} = ?";
+    $paramsRev[] = $revMethod;
+}
+if ($revStatus !== '') {
+    $whereRev .= " AND o.status = ?";
+    $paramsRev[] = $revStatus;
+} else {
+    $whereRev .= " AND o.status != 'cancelled'";
+}
+
+$revByMethod = [];
+try {
+    $stmt = $pdo->prepare("
+        SELECT o.{$pmCol} AS method,
+               COUNT(*) AS cnt,
+               COALESCE(SUM(o.total_amount), 0) AS total
+        FROM orders o
+        {$whereRev}
+        GROUP BY o.{$pmCol}
+        ORDER BY total DESC
+    ");
+    $stmt->execute($paramsRev);
+    while ($r = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        $revByMethod[$r['method']] = $r;
+    }
+} catch (Exception $e) {
+    error_log('Revenue summary error: ' . $e->getMessage());
+}
+
+$revOrders = [];
+try {
+    $stmt = $pdo->prepare("
+        SELECT o.*,
+               (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) AS item_count
+        FROM orders o
+        {$whereRev}
+        ORDER BY o.created_at DESC
+        LIMIT 300
+    ");
+    $stmt->execute($paramsRev);
+    $revOrders = $stmt->fetchAll(PDO::FETCH_ASSOC);
+} catch (Exception $e) {
+    error_log('Revenue detail error: ' . $e->getMessage());
+}
+
+$revTotalAmount = array_sum(array_column($revByMethod, 'total'));
+$revTotalCount  = array_sum(array_column($revByMethod, 'cnt'));
+
+// URL build helper cho filter links
+function buildRevUrl(array $params): string {
+    return 'tax.php?' . http_build_query(array_merge(['tab' => 'revenue'], $params));
+}
 ?>
 
+<style>
+/* ==== TAB NAV ==== */
+.tab-nav-adm {
+    display: flex; gap: 0; margin: 1.5rem 0 1.5rem;
+    border-bottom: 1px solid var(--admin-border);
+}
+.tab-adm {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 12px 24px; text-decoration: none;
+    font-size: 0.92rem; font-weight: 600;
+    color: var(--admin-text-muted);
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: all 0.15s ease;
+}
+.tab-adm:hover { color: #a8461f; }
+.tab-adm.active { color: #a8461f; border-bottom-color: #a8461f; }
+.tab-adm i { font-size: 1.1rem; }
+
+/* ==== REVENUE CARDS ==== */
+.rev-card {
+    padding: 1.1rem 1.25rem; border-radius: 8px;
+    border: 1px solid var(--admin-border); background: #fff;
+    text-decoration: none; color: inherit; display: block;
+    transition: all 0.15s ease;
+}
+.rev-card:hover { border-color: #d4b8a8; }
+.rev-card.active { border-color: #a8461f; border-width: 2px; padding: calc(1.1rem - 1px) calc(1.25rem - 1px); }
+.rev-card__icon { font-size: 1.4rem; color: var(--admin-text-muted); margin-bottom: 0.6rem; display: block; }
+.rev-card.active .rev-card__icon { color: #a8461f; }
+.rev-card__label {
+    font-size: 0.72rem; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--admin-text-muted);
+    margin-bottom: 0.35rem;
+}
+.rev-card__amount {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 1.3rem; font-weight: 700; color: #1c1b19;
+}
+.rev-card__count { font-size: 0.78rem; color: var(--admin-text-muted); margin-top: 4px; }
+
+/* ==== FLASH ==== */
+.adm-flash {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 16px; border-radius: 8px; margin-bottom: 20px;
+    font-size: 0.9rem;
+}
+.adm-flash i { font-size: 1.15rem; }
+.adm-flash--success { background: #ecfdf5; color: #047857; border-left: 3px solid #16a34a; }
+.adm-flash--error   { background: #fee2e2; color: #b91c1c; border-left: 3px solid #dc2626; }
+
+/* ==== HELP BOX ==== */
+.help-box {
+    background: #faf8f4; border: 1px solid var(--admin-border);
+    border-radius: 8px; padding: 1.25rem 1.5rem;
+    margin-bottom: 1.5rem; line-height: 1.7; font-size: 0.9rem;
+}
+.help-box__title {
+    display: flex; align-items: center; gap: 8px;
+    margin: 0 0 0.75rem;
+    font-family: 'Fraunces', serif; font-size: 1.05rem; font-weight: 600; color: #1c1b19;
+}
+.help-box__title i { color: #a8461f; font-size: 1.2rem; }
+.help-box ul { margin: 0; padding-left: 1.25rem; color: #3d3a35; }
+.help-box a { color: #a8461f; font-weight: 600; }
+
+/* ==== WARNING ==== */
+.rev-warning {
+    display: flex; align-items: flex-start; gap: 10px;
+    margin-top: 1.25rem; padding: 1rem 1.25rem;
+    border-radius: 6px; font-size: 0.9rem; line-height: 1.7;
+}
+.rev-warning i { font-size: 1.2rem; flex-shrink: 0; margin-top: 2px; }
+.rev-warning--danger  { background: #fef2f2; border-left: 3px solid #dc2626; color: #7f1d1d; }
+.rev-warning--warning { background: #fffbeb; border-left: 3px solid #d97706; color: #78350f; }
+
+/* ==== INFO NOTE ==== */
+.info-note {
+    display: flex; align-items: flex-start; gap: 10px;
+    background: #faf8f4; border: 1px solid var(--admin-border);
+    padding: 1rem 1.25rem; border-radius: 6px;
+    margin-bottom: 1rem; font-size: 0.85rem; color: #5a5550; line-height: 1.7;
+}
+.info-note i { color: #a8461f; font-size: 1.1rem; flex-shrink: 0; margin-top: 2px; }
+.info-note b { color: #1c1b19; }
+
+/* ==== EMPTY STATE ==== */
+.empty-state {
+    text-align: center; padding: 3rem 1rem; color: var(--admin-text-muted);
+}
+.empty-state i { font-size: 3rem; opacity: 0.3; margin-bottom: 0.75rem; display: block; }
+.empty-state p { margin: 0; }
+
+/* ==== BTN WITH ICON ==== */
+.btn-adm i { font-size: 1.05rem; vertical-align: -2px; }
+</style>
+
+<!-- ============================================================ -->
+<!-- PAGE HEAD                                                     -->
+<!-- ============================================================ -->
 <div class="admin-page-head">
     <div>
-        <h1>Quản lý thuế</h1>
+        <h1>Quản lý thuế &amp; doanh thu</h1>
         <div class="subtitle">
-            Theo dõi doanh thu, tính thuế GTGT + TNCN và quản lý lịch sử kê khai
+            Theo dõi doanh thu theo phương thức thanh toán, tính thuế GTGT + TNCN và quản lý lịch sử kê khai
         </div>
     </div>
-    <div>
-        <button type="button" class="btn-adm btn-adm--ghost" onclick="document.getElementById('helpBox').toggleAttribute('hidden')">
-            ❓ Hướng dẫn
+    <div style="display:flex;gap:0.5rem">
+        <button type="button" class="btn-adm btn-adm--ghost"
+                onclick="document.getElementById('helpBox').toggleAttribute('hidden')">
+            <i class="ph ph-question"></i> Hướng dẫn
         </button>
     </div>
 </div>
 
+<!-- ============================================================ -->
+<!-- FLASH                                                         -->
+<!-- ============================================================ -->
 <?php if ($flash): ?>
-    <div style="padding:12px 16px;border-radius:8px;margin-bottom:20px;
-                background:<?php echo $flash['type'] === 'error' ? '#fee2e2' : '#ecfdf5'; ?>;
-                color:<?php echo $flash['type'] === 'error' ? '#b91c1c' : '#047857'; ?>;">
-        <?php echo htmlspecialchars($flash['msg'], ENT_QUOTES, 'UTF-8'); ?>
+    <div class="adm-flash adm-flash--<?php echo $flash['type'] === 'error' ? 'error' : 'success'; ?>">
+        <i class="ph <?php echo $flash['type'] === 'error' ? 'ph-x-circle' : 'ph-check-circle'; ?>"></i>
+        <span><?php echo htmlspecialchars($flash['msg'], ENT_QUOTES, 'UTF-8'); ?></span>
     </div>
 <?php endif; ?>
 
 <!-- ============================================================ -->
-<!-- BOX HƯỚNG DẪN                                                 -->
+<!-- TAB NAVIGATION                                                -->
 <!-- ============================================================ -->
-<div id="helpBox" hidden style="background:#eff6ff;border-left:4px solid #1d4ed8;
-     padding:1.25rem 1.5rem;border-radius:8px;margin-bottom:1.5rem;line-height:1.7;font-size:0.9rem">
-    <h3 style="margin:0 0 0.75rem;font-family:'Fraunces',serif;font-size:1.05rem;color:#1e3a8a">
-        📘 Hiểu nhanh về thuế hộ kinh doanh
+<div class="tab-nav-adm">
+    <a href="tax.php?tab=revenue" class="tab-adm <?php echo $activeTab === 'revenue' ? 'active' : ''; ?>">
+        <i class="ph ph-chart-line-up"></i> Doanh thu
+    </a>
+    <a href="tax.php?tab=tax" class="tab-adm <?php echo $activeTab === 'tax' ? 'active' : ''; ?>">
+        <i class="ph ph-receipt"></i> Thuế
+    </a>
+</div>
+
+<?php if ($activeTab === 'tax'): ?>
+<!-- ============================================================ -->
+<!-- TAB THUẾ                                                      -->
+<!-- ============================================================ -->
+
+<!-- HELP BOX -->
+<div id="helpBox" hidden class="help-box">
+    <h3 class="help-box__title">
+        <i class="ph ph-info"></i> Hiểu nhanh về thuế hộ kinh doanh
     </h3>
-    <ul style="margin:0;padding-left:1.25rem;color:#1e3a8a">
+    <ul>
         <li><b>Ngưỡng miễn thuế:</b> Doanh thu &lt; 500 triệu/năm → miễn cả GTGT và TNCN.</li>
         <li><b>Vượt 500 triệu:</b> Nộp <b>1% GTGT + 0,5% TNCN = 1,5%</b> trên phần doanh thu vượt ngưỡng.</li>
-        <li><b>Kê khai tại:</b> <a href="https://thuedientu.gdt.gov.vn" target="_blank" style="color:#1d4ed8;font-weight:600">thuedientu.gdt.gov.vn</a> (phân hệ CÁ NHÂN) hoặc app <b>eTax Mobile</b>.</li>
+        <li><b>Kê khai tại:</b> <a href="https://thuedientu.gdt.gov.vn" target="_blank">thuedientu.gdt.gov.vn</a> (phân hệ CÁ NHÂN) hoặc app <b>eTax Mobile</b>.</li>
         <li><b>Tần suất:</b> Theo quý (mặc định) hoặc theo tháng.</li>
         <li><b>Doanh thu tính thuế:</b> Chỉ tính đơn <b>delivered / shipped / confirmed</b> — không tính đơn cancelled.</li>
         <li><b>Lưu ý:</b> Nếu bán trên Shopee/Lazada, sàn đã khấu trừ và nộp thay — chỉ kê khai phần bán trên website riêng.</li>
     </ul>
 </div>
 
-<!-- ============================================================ -->
-<!-- SECTION 1: DASHBOARD DOANH THU + NGƯỠNG                        -->
-<!-- ============================================================ -->
+<!-- SECTION 1: DASHBOARD -->
 <div class="admin-card" style="padding:1.75rem;margin-bottom:1.25rem;">
     <h2 style="font-family:'Fraunces',serif;font-size:1.15rem;font-weight:600;
                margin:0 0 1.5rem;padding-bottom:0.75rem;
                border-bottom:1px solid var(--admin-border);">
-         Tổng quan doanh thu <?php echo $currentYear; ?>
+        Tổng quan doanh thu <?php echo $currentYear; ?>
     </h2>
 
-    <!-- Stat cards -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1.75rem;">
 
         <div style="background:#f8f9fa;padding:1.1rem 1.25rem;border-radius:8px;border:1px solid var(--admin-border);">
@@ -392,8 +611,7 @@ $statusMap = [
                         color:var(--admin-text-muted);margin-bottom:0.4rem;">
                 Doanh thu năm nay
             </div>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:1.35rem;
-                        font-weight:700;color:#1c1b19;">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:1.35rem;font-weight:700;color:#1c1b19;">
                 <?php echo fmtMoney($yearRevenue); ?>
             </div>
         </div>
@@ -403,8 +621,7 @@ $statusMap = [
                         color:var(--admin-text-muted);margin-bottom:0.4rem;">
                 Doanh thu tháng <?php echo date('m/Y'); ?>
             </div>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:1.35rem;
-                        font-weight:700;color:#1c1b19;">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:1.35rem;font-weight:700;color:#1c1b19;">
                 <?php echo fmtMoney($monthRevenue); ?>
             </div>
         </div>
@@ -414,8 +631,7 @@ $statusMap = [
                         color:var(--admin-text-muted);margin-bottom:0.4rem;">
                 Ngưỡng miễn thuế
             </div>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:1.35rem;
-                        font-weight:700;color:#1c1b19;">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:1.35rem;font-weight:700;color:#1c1b19;">
                 <?php echo fmtMoney($threshold); ?>
             </div>
         </div>
@@ -425,8 +641,7 @@ $statusMap = [
                         color:var(--admin-text-muted);margin-bottom:0.4rem;">
                 Thuế đã nộp <?php echo $currentYear; ?>
             </div>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:1.35rem;
-                        font-weight:700;color:#16a34a;">
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:1.35rem;font-weight:700;color:#16a34a;">
                 <?php echo fmtMoney($yearPaidTax); ?>
             </div>
         </div>
@@ -463,29 +678,31 @@ $statusMap = [
     </div>
 
     <?php if ($usedPct >= 100): ?>
-        <div style="margin-top:1.25rem;padding:1rem 1.25rem;background:#fef2f2;
-                    border-left:4px solid #dc2626;border-radius:6px;color:#7f1d1d;font-size:0.9rem;line-height:1.7">
-             <b>Đã vượt ngưỡng miễn thuế!</b> Bạn cần kê khai và nộp thuế
-            <b><?php echo $vatRate; ?>% GTGT + <?php echo $pitRate; ?>% TNCN</b>
-            trên phần doanh thu vượt <?php echo fmtMoney($threshold); ?>.
+        <div class="rev-warning rev-warning--danger">
+            <i class="ph ph-warning-circle"></i>
+            <div>
+                <b>Đã vượt ngưỡng miễn thuế!</b> Bạn cần kê khai và nộp thuế
+                <b><?php echo $vatRate; ?>% GTGT + <?php echo $pitRate; ?>% TNCN</b>
+                trên phần doanh thu vượt <?php echo fmtMoney($threshold); ?>.
+            </div>
         </div>
     <?php elseif ($usedPct >= 80): ?>
-        <div style="margin-top:1.25rem;padding:1rem 1.25rem;background:#fffbeb;
-                    border-left:4px solid #d97706;border-radius:6px;color:#78350f;font-size:0.9rem;line-height:1.7">
-            ⚠️ <b>Sắp chạm ngưỡng!</b> Doanh thu đã đạt <?php echo number_format($usedPct, 1); ?>%.
-            Chuẩn bị kê khai khi vượt 500 triệu.
+        <div class="rev-warning rev-warning--warning">
+            <i class="ph ph-warning"></i>
+            <div>
+                <b>Sắp chạm ngưỡng!</b> Doanh thu đã đạt <?php echo number_format($usedPct, 1); ?>%.
+                Chuẩn bị kê khai khi vượt 500 triệu.
+            </div>
         </div>
     <?php endif; ?>
 </div>
 
-<!-- ============================================================ -->
-<!-- SECTION 2: CẤU HÌNH THUẾ                                       -->
-<!-- ============================================================ -->
+<!-- SECTION 2: CẤU HÌNH THUẾ -->
 <div class="admin-card" style="padding:1.75rem;margin-bottom:1.25rem;">
     <h2 style="font-family:'Fraunces',serif;font-size:1.15rem;font-weight:600;
                margin:0 0 1.5rem;padding-bottom:0.75rem;
                border-bottom:1px solid var(--admin-border);">
-         Cấu hình thuế
+        Cấu hình thuế
     </h2>
 
     <form method="POST" action="tax.php">
@@ -573,20 +790,18 @@ $statusMap = [
 
         <div style="margin-top:1.5rem;display:flex;justify-content:flex-end;gap:0.75rem">
             <button type="submit" class="btn-adm btn-adm--primary" style="padding:0.85rem 2rem">
-                 Lưu cấu hình
+                <i class="ph ph-check"></i> Lưu cấu hình
             </button>
         </div>
     </form>
 </div>
 
-<!-- ============================================================ -->
-<!-- SECTION 3: TÍNH THUẾ KỲ                                        -->
-<!-- ============================================================ -->
+<!-- SECTION 3: TÍNH THUẾ KỲ -->
 <div class="admin-card" style="padding:1.75rem;margin-bottom:1.25rem;">
     <h2 style="font-family:'Fraunces',serif;font-size:1.15rem;font-weight:600;
                margin:0 0 1.5rem;padding-bottom:0.75rem;
                border-bottom:1px solid var(--admin-border);">
-         Tạo báo cáo thuế theo kỳ
+        Tạo báo cáo thuế theo kỳ
     </h2>
 
     <form method="POST" action="tax.php" id="createReportForm">
@@ -613,53 +828,43 @@ $statusMap = [
             </div>
         </div>
 
-        <div style="background:#f8f9fa;padding:1rem 1.25rem;border-radius:6px;
-                    border:1px solid var(--admin-border);margin-bottom:1rem;
-                    font-size:0.85rem;color:var(--admin-text-muted);line-height:1.7">
-            <b style="color:#1c1b19">💡 Cách tính:</b><br>
-            1. Tính tổng doanh thu <b>cả năm</b> có chứa kỳ → so sánh với ngưỡng <?php echo fmtMoney($threshold); ?><br>
-            2. Nếu năm chưa vượt ngưỡng → miễn thuế, báo cáo vẫn tạo nhưng thuế = 0<br>
-            3. Nếu năm đã vượt → tính phần vượt, phân bổ theo tỷ lệ doanh thu kỳ/năm<br>
-            4. Thuế GTGT = Doanh thu tính thuế × <?php echo $vatRate; ?>% ·
-               TNCN = Doanh thu tính thuế × <?php echo $pitRate; ?>%
+        <div class="info-note">
+            <i class="ph ph-lightbulb"></i>
+            <div>
+                <b>Cách tính:</b><br>
+                1. Tính tổng doanh thu <b>cả năm</b> có chứa kỳ → so sánh với ngưỡng <?php echo fmtMoney($threshold); ?><br>
+                2. Nếu năm chưa vượt ngưỡng → miễn thuế, báo cáo vẫn tạo nhưng thuế = 0<br>
+                3. Nếu năm đã vượt → tính phần vượt, phân bổ theo tỷ lệ doanh thu kỳ/năm<br>
+                4. Thuế GTGT = Doanh thu tính thuế × <?php echo $vatRate; ?>% ·
+                   TNCN = Doanh thu tính thuế × <?php echo $pitRate; ?>%
+            </div>
         </div>
 
         <div style="display:flex;justify-content:flex-end;gap:0.75rem">
             <button type="submit" class="btn-adm btn-adm--primary" style="padding:0.85rem 2rem">
-                 Tính & lưu báo cáo
+                <i class="ph ph-calculator"></i> Tính &amp; lưu báo cáo
             </button>
         </div>
     </form>
-
-    <div id="previewBox" style="display:none;margin-top:1.5rem;padding:1.25rem;
-                background:#fffbeb;border-left:4px solid #d97706;border-radius:6px">
-        <div style="font-size:0.75rem;text-transform:uppercase;letter-spacing:0.08em;
-                    color:#92400e;margin-bottom:0.5rem;font-weight:700">
-            Xem trước kết quả
-        </div>
-        <div id="previewContent" style="font-size:0.9rem;color:#1c1b19;line-height:1.9"></div>
-    </div>
 </div>
 
-<!-- ============================================================ -->
-<!-- SECTION 4: LỊCH SỬ BÁO CÁO                                     -->
-<!-- ============================================================ -->
+<!-- SECTION 4: LỊCH SỬ BÁO CÁO -->
 <div class="admin-card" style="padding:1.75rem;">
     <div style="display:flex;justify-content:space-between;align-items:center;
                 margin-bottom:1.5rem;padding-bottom:0.75rem;
                 border-bottom:1px solid var(--admin-border);flex-wrap:wrap;gap:0.75rem">
         <h2 style="font-family:'Fraunces',serif;font-size:1.15rem;font-weight:600;margin:0">
-             Lịch sử kê khai
+            Lịch sử kê khai
         </h2>
         <button type="button" class="btn-adm btn-adm--ghost" onclick="exportCsv()">
-             Xuất CSV
+            <i class="ph ph-download-simple"></i> Xuất CSV
         </button>
     </div>
 
     <?php if (empty($reports)): ?>
-        <div style="text-align:center;padding:3rem 1rem;color:var(--admin-text-muted)">
-            <div style="font-size:3rem;opacity:0.35;margin-bottom:0.5rem">📭</div>
-            <p style="margin:0">Chưa có báo cáo thuế nào. Tạo báo cáo đầu tiên ở mục trên.</p>
+        <div class="empty-state">
+            <i class="ph ph-tray"></i>
+            <p>Chưa có báo cáo thuế nào. Tạo báo cáo đầu tiên ở mục trên.</p>
         </div>
     <?php else: ?>
         <div style="overflow-x:auto">
@@ -736,8 +941,8 @@ $statusMap = [
                                     <input type="hidden" name="report_id" value="<?php echo (int)$r['id']; ?>">
                                     <button type="submit" title="Xóa"
                                             style="background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;
-                                                   padding:5px 9px;border-radius:5px;cursor:pointer;font-size:0.78rem">
-                                        🗑
+                                                   padding:5px 9px;border-radius:5px;cursor:pointer;font-size:0.9rem">
+                                        <i class="ph ph-trash"></i>
                                     </button>
                                 </form>
                             </td>
@@ -748,6 +953,217 @@ $statusMap = [
         </div>
     <?php endif; ?>
 </div>
+
+<?php else: ?>
+<!-- ============================================================ -->
+<!-- TAB DOANH THU                                                 -->
+<!-- ============================================================ -->
+
+<!-- BỘ LỌC -->
+<div class="admin-card" style="padding:1.5rem;margin-bottom:1.25rem;">
+    <form method="GET" action="tax.php" style="display:flex;gap:1rem;flex-wrap:wrap;align-items:flex-end">
+        <input type="hidden" name="tab" value="revenue">
+
+        <div class="adm-form-group" style="margin:0;flex:1;min-width:150px">
+            <label>Từ ngày</label>
+            <input type="date" name="rev_from" class="adm-input" value="<?php echo htmlspecialchars($revFrom); ?>">
+        </div>
+        <div class="adm-form-group" style="margin:0;flex:1;min-width:150px">
+            <label>Đến ngày</label>
+            <input type="date" name="rev_to" class="adm-input" value="<?php echo htmlspecialchars($revTo); ?>">
+        </div>
+        <div class="adm-form-group" style="margin:0;flex:1;min-width:180px">
+            <label>Phương thức</label>
+            <select name="rev_method" class="adm-select">
+                <option value="">— Tất cả —</option>
+                <?php foreach ($methodMeta as $key => $m): ?>
+                    <option value="<?php echo htmlspecialchars($key); ?>"
+                        <?php echo $revMethod === $key ? 'selected' : ''; ?>>
+                        <?php echo htmlspecialchars($m['label']); ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+        <div class="adm-form-group" style="margin:0;flex:1;min-width:170px">
+            <label>Trạng thái đơn</label>
+            <select name="rev_status" class="adm-select">
+                <option value="">— Tất cả (trừ đã hủy) —</option>
+                <?php foreach ($orderStatusMap as $k => $s): ?>
+                    <option value="<?php echo $k; ?>" <?php echo $revStatus === $k ? 'selected' : ''; ?>>
+                        <?php echo htmlspecialchars($s['label']); ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
+        </div>
+
+        <div style="display:flex;gap:0.5rem">
+            <button type="submit" class="btn-adm btn-adm--primary" style="padding:0.7rem 1.5rem">
+                <i class="ph ph-funnel"></i> Lọc
+            </button>
+            <a href="tax.php?tab=revenue" class="btn-adm btn-adm--ghost" style="padding:0.7rem 1.2rem">
+                <i class="ph ph-x"></i> Xóa
+            </a>
+        </div>
+    </form>
+</div>
+
+<!-- TỔNG HỢP THEO PHƯƠNG THỨC -->
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin-bottom:1.25rem">
+
+    <!-- Card tổng -->
+    <a href="<?php echo htmlspecialchars(buildRevUrl([
+        'rev_from' => $revFrom,
+        'rev_to'   => $revTo,
+        'rev_status' => $revStatus ?: null,
+    ])); ?>"
+       class="rev-card <?php echo $revMethod === '' ? 'active' : ''; ?>">
+        <i class="ph ph-currency-circle-dollar rev-card__icon"></i>
+        <div class="rev-card__label">Tổng doanh thu</div>
+        <div class="rev-card__amount"><?php echo fmtMoney($revTotalAmount); ?></div>
+        <div class="rev-card__count"><?php echo number_format($revTotalCount); ?> đơn hàng</div>
+    </a>
+
+    <?php foreach ($revByMethod as $method => $r):
+        $meta = $metaFor($method);
+        $isActive = ($revMethod === $method);
+        $link = buildRevUrl([
+            'rev_from'   => $revFrom,
+            'rev_to'     => $revTo,
+            'rev_status' => $revStatus ?: null,
+            'rev_method' => $method,
+        ]);
+    ?>
+        <a href="<?php echo htmlspecialchars($link); ?>"
+           class="rev-card <?php echo $isActive ? 'active' : ''; ?>">
+            <i class="ph <?php echo $meta['icon']; ?> rev-card__icon"></i>
+            <div class="rev-card__label"><?php echo htmlspecialchars($meta['label']); ?></div>
+            <div class="rev-card__amount"><?php echo fmtMoney($r['total']); ?></div>
+            <div class="rev-card__count"><?php echo number_format((int)$r['cnt']); ?> đơn</div>
+        </a>
+    <?php endforeach; ?>
+
+    <?php if (empty($revByMethod)): ?>
+        <div style="grid-column:1/-1;padding:1.5rem;text-align:center;
+                    background:#faf8f4;border-radius:8px;color:var(--admin-text-muted);
+                    border:1px solid var(--admin-border)">
+            Không có đơn hàng nào trong khoảng thời gian đã chọn.
+        </div>
+    <?php endif; ?>
+</div>
+
+<!-- CHI TIẾT ĐƠN HÀNG -->
+<div class="admin-card" style="padding:1.75rem;">
+    <div style="display:flex;justify-content:space-between;align-items:center;
+                margin-bottom:1.25rem;padding-bottom:0.75rem;
+                border-bottom:1px solid var(--admin-border);flex-wrap:wrap;gap:0.75rem">
+        <h2 style="font-family:'Fraunces',serif;font-size:1.15rem;font-weight:600;margin:0">
+            Chi tiết đơn hàng
+            <span style="font-size:0.8rem;font-weight:400;color:var(--admin-text-muted)">
+                (<?php echo count($revOrders); ?> đơn gần nhất)
+            </span>
+        </h2>
+        <?php if ($revMethod !== ''):
+            $m = $metaFor($revMethod); ?>
+            <span style="font-size:0.82rem;color:var(--admin-text-muted);
+                         display:inline-flex;align-items:center;gap:6px">
+                <i class="ph ph-funnel"></i>
+                Đang lọc: <b style="color:#1c1b19"><?php echo htmlspecialchars($m['label']); ?></b>
+            </span>
+        <?php endif; ?>
+    </div>
+
+    <?php if (empty($revOrders)): ?>
+        <div class="empty-state">
+            <i class="ph ph-tray"></i>
+            <p>Không có đơn hàng nào phù hợp với bộ lọc.</p>
+        </div>
+    <?php else: ?>
+        <div style="overflow-x:auto">
+            <table class="adm-table" style="width:100%;border-collapse:collapse;font-size:0.85rem">
+                <thead>
+                    <tr style="background:#f8f9fa;text-align:left">
+                        <th style="padding:10px 12px;border-bottom:2px solid var(--admin-border)">Mã đơn</th>
+                        <th style="padding:10px 12px;border-bottom:2px solid var(--admin-border)">Ngày</th>
+                        <th style="padding:10px 12px;border-bottom:2px solid var(--admin-border)">Khách hàng</th>
+                        <th style="padding:10px 12px;border-bottom:2px solid var(--admin-border)">Phương thức</th>
+                        <th style="padding:10px 12px;border-bottom:2px solid var(--admin-border)">Trạng thái</th>
+                        <th style="padding:10px 12px;border-bottom:2px solid var(--admin-border)">Thanh toán</th>
+                        <th style="padding:10px 12px;border-bottom:2px solid var(--admin-border);text-align:right">Tổng tiền</th>
+                        <th style="padding:10px 12px;border-bottom:2px solid var(--admin-border);text-align:right"></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($revOrders as $o):
+                        $st = $orderStatusMap[$o['status']] ?? ['label' => $o['status'], 'bg' => '#f3f4f6', 'color' => '#4b5563'];
+                        $ps = $payStatusMap[$o['payment_status'] ?? ''] ?? ['label' => $o['payment_status'] ?? '—', 'bg' => '#f3f4f6', 'color' => '#4b5563'];
+                        $methodKey = $o[$pmCol] ?? '';
+                        $m = $metaFor($methodKey);
+                        $custName  = pickField($o, ['customer_name', 'shipping_name', 'receiver_name'], 'Khách lẻ');
+                        $custPhone = pickField($o, ['customer_phone', 'shipping_phone', 'receiver_phone'], '');
+                    ?>
+                        <tr style="border-bottom:1px solid #f1f5f9">
+                            <td style="padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-weight:700">
+                                #<?php echo (int)$o['id']; ?>
+                                <?php if (!empty($o['item_count'])): ?>
+                                    <div style="font-size:0.72rem;color:var(--admin-text-muted);font-weight:400;font-family:inherit">
+                                        <?php echo (int)$o['item_count']; ?> sản phẩm
+                                    </div>
+                                <?php endif; ?>
+                            </td>
+                            <td style="padding:10px 12px;font-family:'IBM Plex Mono',monospace;font-size:0.8rem">
+                                <?php echo date('d/m/Y H:i', strtotime($o['created_at'])); ?>
+                            </td>
+                            <td style="padding:10px 12px">
+                                <?php echo htmlspecialchars($custName); ?>
+                                <?php if ($custPhone): ?>
+                                    <div style="font-size:0.75rem;color:var(--admin-text-muted)">
+                                        <?php echo htmlspecialchars($custPhone); ?>
+                                    </div>
+                                <?php endif; ?>
+                            </td>
+                            <td style="padding:10px 12px">
+                                <span style="display:inline-flex;align-items:center;gap:6px;
+                                             padding:3px 10px;border-radius:10px;
+                                             background:#f5f1ea;color:#1c1b19;
+                                             font-size:0.75rem;font-weight:600">
+                                    <i class="ph <?php echo $m['icon']; ?>"></i>
+                                    <?php echo htmlspecialchars($m['label']); ?>
+                                </span>
+                            </td>
+                            <td style="padding:10px 12px">
+                                <span style="display:inline-block;padding:3px 10px;border-radius:10px;
+                                             background:<?php echo $st['bg']; ?>;color:<?php echo $st['color']; ?>;
+                                             font-size:0.75rem;font-weight:600">
+                                    <?php echo $st['label']; ?>
+                                </span>
+                            </td>
+                            <td style="padding:10px 12px">
+                                <span style="display:inline-block;padding:3px 10px;border-radius:10px;
+                                             background:<?php echo $ps['bg']; ?>;color:<?php echo $ps['color']; ?>;
+                                             font-size:0.75rem;font-weight:600">
+                                    <?php echo $ps['label']; ?>
+                                </span>
+                            </td>
+                            <td style="padding:10px 12px;text-align:right;
+                                       font-family:'IBM Plex Mono',monospace;font-weight:700">
+                                <?php echo fmtMoney($o['total_amount']); ?>
+                            </td>
+                            <td style="padding:10px 12px;text-align:right;white-space:nowrap">
+                                <a href="order-detail.php?id=<?php echo (int)$o['id']; ?>"
+                                   class="btn-adm btn-adm--ghost"
+                                   style="padding:5px 12px;font-size:0.78rem">
+                                    <i class="ph ph-eye"></i> Xem
+                                </a>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    <?php endif; ?>
+</div>
+
+<?php endif; ?>
 
 <script>
 /* ============================================================
@@ -770,12 +1186,11 @@ $statusMap = [
     }
 
     typeSel.addEventListener('change', function () {
-        // Chỉ auto điền nếu input đang trống hoặc có format khác
         var cur = valueInp.value.trim();
         var expectedFmt;
-        if (typeSel.value === 'month')   expectedFmt = /^\d{4}-\d{2}$/;
+        if (typeSel.value === 'month')        expectedFmt = /^\d{4}-\d{2}$/;
         else if (typeSel.value === 'quarter') expectedFmt = /^\d{4}-Q[1-4]$/;
-        else expectedFmt = /^\d{4}$/;
+        else                                  expectedFmt = /^\d{4}$/;
 
         if (!cur || !expectedFmt.test(cur)) {
             valueInp.value = suggestValue();
@@ -784,7 +1199,7 @@ $statusMap = [
 })();
 
 /* ============================================================
-   XUẤT CSV
+   XUẤT CSV BÁO CÁO THUẾ
    ============================================================ */
 function exportCsv() {
     var table = document.getElementById('reportsTable');
@@ -804,11 +1219,8 @@ function exportCsv() {
         var tds = tr.querySelectorAll('td');
         if (tds.length < 9) return;
 
-        // Kỳ - lấy text đầu, bỏ phần ngày
         var periodText = tds[0].childNodes[0].textContent.trim();
-
-        // Ngày — parse từ sub text
-        var dateText = tds[0].querySelector('div')?.textContent.trim() || '';
+        var dateText = tds[0].querySelector('div') ? tds[0].querySelector('div').textContent.trim() : '';
         var parts = dateText.split('-').map(function (s) { return s.trim(); });
 
         var revenue = tds[1].textContent.trim().replace(/[^\d]/g, '');
@@ -828,7 +1240,7 @@ function exportCsv() {
         ].join(','));
     });
 
-    var csv  = '\uFEFF' + rows.join('\n'); // BOM để Excel đọc đúng UTF-8
+    var csv  = '\uFEFF' + rows.join('\n');
     var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     var url  = URL.createObjectURL(blob);
     var a    = document.createElement('a');

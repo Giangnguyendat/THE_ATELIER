@@ -1,6 +1,6 @@
 <?php
 require_once '../includes/config.php';
-require_once '../includes/voucher_helper.php';  // ✅ dùng resetVoucherUses()
+require_once '../includes/voucher_helper.php';  // dùng resetVoucherUses()
 include 'includes/admin_header.php';
 
 /* ============================================================
@@ -14,9 +14,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $action = $_POST['action'] ?? '';
 
-    /* ============================================================
-       XÓA — xóa cả log voucher_usages (transaction)
-       ============================================================ */
+    /* ---------- XÓA — xóa cả log voucher_usages (transaction) ---------- */
     if ($action === 'delete') {
         $id = (int)($_POST['id'] ?? 0);
         if ($id > 0) {
@@ -34,9 +32,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: vouchers.php'); exit;
     }
 
-    /* ============================================================
-       RESET LƯỢT DÙNG
-       ============================================================ */
+    /* ---------- RESET LƯỢT DÙNG ---------- */
     if ($action === 'reset') {
         $id = (int)($_POST['id'] ?? 0);
         if ($id > 0 && function_exists('resetVoucherUses')) {
@@ -49,9 +45,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: vouchers.php'); exit;
     }
 
-    /* ============================================================
-       LƯU (THÊM / SỬA)
-       ============================================================ */
+    /* ---------- LƯU (THÊM / SỬA) ---------- */
     if ($action === 'save') {
         $id          = (int)($_POST['id'] ?? 0);
         $code        = strtoupper(trim($_POST['code'] ?? ''));
@@ -64,7 +58,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $userId      = !empty($_POST['user_id']) ? (int)$_POST['user_id'] : null;
         $usageLimit  = max(0, (int)($_POST['usage_limit'] ?? 1));
 
-        /* ---- Validate ---- */
         if ($code === '') {
             $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Nhập mã voucher.'];
             header('Location: vouchers.php'); exit;
@@ -78,7 +71,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Location: vouchers.php'); exit;
         }
 
-        /* Check trùng code (trừ chính nó) */
         $dupCheck = $pdo->prepare("SELECT id FROM vouchers WHERE code = ? AND id != ?");
         $dupCheck->execute([$code, $id]);
         if ($dupCheck->fetch()) {
@@ -87,7 +79,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         if ($id > 0) {
-            /* ---- UPDATE ---- */
             $pdo->prepare("
                 UPDATE vouchers
                 SET code=?, type=?, discount_percent=?, max_discount_amount=?,
@@ -99,7 +90,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ]);
             $_SESSION['admin_flash'] = ['type' => 'success', 'msg' => "Đã cập nhật voucher $code"];
         } else {
-            /* ---- INSERT ---- */
             $pdo->prepare("
                 INSERT INTO vouchers
                     (code, type, discount_percent, max_discount_amount, min_order_amount,
@@ -121,7 +111,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $filter = $_GET['status'] ?? '';
 $where  = "WHERE 1=1";
 
-/* ✅ Filter mới hỗ trợ multi-use voucher */
 if ($filter === 'active') {
     $where .= " AND valid_from <= CURDATE() AND valid_to >= CURDATE()
                 AND (usage_limit = 0 OR used_count < usage_limit)";
@@ -146,11 +135,10 @@ $stmt = $pdo->query("
 ");
 $vouchers = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-/* Danh sách user để gán voucher (chỉ query 1 lần) */
 $userList = $pdo->query("SELECT id, full_name, email FROM users ORDER BY full_name LIMIT 500")->fetchAll(PDO::FETCH_ASSOC);
 
 /* ============================================================
-   ĐẾM VOUCHER THEO TRẠNG THÁI (cho tab bar)
+   ĐẾM VOUCHER THEO TRẠNG THÁI
    ============================================================ */
 $countAll = $countActive = $countUsed = $countExpired = $countUpcoming = $countUnlimited = 0;
 
@@ -181,9 +169,7 @@ try {
     ")->fetchColumn();
 
 } catch (Exception $e) {
-    /* Fallback nếu cột mới chưa tồn tại */
     error_log('[vouchers.php counts] ' . $e->getMessage());
-
     try {
         $countAll       = (int)$pdo->query("SELECT COUNT(*) FROM vouchers")->fetchColumn();
         $countActive    = (int)$pdo->query("SELECT COUNT(*) FROM vouchers WHERE used = 0 AND valid_from <= CURDATE() AND valid_to >= CURDATE()")->fetchColumn();
@@ -194,17 +180,17 @@ try {
     } catch (Exception $e2) {}
 }
 
-/* ✅ FIX: Định nghĩa $typeLabels */
+/* Type labels — dùng Phosphor icon thay emoji */
 $typeLabels = [
-    'birthday' => '🎂 Sinh nhật',
-    'public'   => '🌐 Công khai',
-    'manual'   => '✍️ Thủ công',
+    'birthday' => '<i class="ph ph-cake"></i> Sinh nhật',
+    'public'   => '<i class="ph ph-globe"></i> Công khai',
+    'manual'   => '<i class="ph ph-pencil-simple"></i> Thủ công',
 ];
 ?>
 
 <style>
 /* ============================================================
-   MARKETING TABS — fallback nếu chưa có trong admin_header
+   MARKETING TABS
    ============================================================ */
 .mkt-tabs {
     display: flex;
@@ -286,6 +272,7 @@ $typeLabels = [
     gap: 6px;
     transition: all 0.15s;
 }
+.vch-filter i { font-size: 1rem; }
 .vch-filter:hover { background: #fbf7ef; border-color: #d4c9b3; }
 .vch-filter.active {
     background: var(--admin-accent);
@@ -321,6 +308,7 @@ $typeLabels = [
     margin-top: 2px;
     letter-spacing: 0.03em;
 }
+.vch-usage-cell .ph { font-size: 1.35rem; }
 .vch-progress {
     width: 60px;
     height: 4px;
@@ -349,7 +337,11 @@ $typeLabels = [
 .vch-actions .btn-adm {
     padding: 6px 10px;
     font-size: 0.72rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
 }
+.vch-actions .btn-adm i { font-size: 0.95rem; }
 
 /* ============================================================
    PRESET BUTTONS
@@ -377,6 +369,27 @@ $typeLabels = [
     border-color: #a8461f;
 }
 
+/* ============================================================
+   BUTTON ICON ALIGNMENT
+   ============================================================ */
+.btn-adm i { vertical-align: -2px; }
+
+/* ============================================================
+   EMPTY STATE
+   ============================================================ */
+.vch-empty {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--admin-text-muted);
+}
+.vch-empty i {
+    font-size: 3rem;
+    opacity: 0.3;
+    display: block;
+    margin-bottom: 0.75rem;
+}
+.vch-empty p { margin: 0; }
+
 @media (max-width: 600px) {
     .mkt-tab, .vch-filter { padding: 9px 12px; font-size: 0.78rem; }
 }
@@ -393,14 +406,14 @@ $typeLabels = [
         </div>
     </div>
     <button type="button" class="btn-adm btn-adm--primary" onclick="openVoucherModal()">
-        + Thêm voucher
+        <i class="ph ph-plus"></i> Thêm voucher
     </button>
 </div>
 
 <!-- TAB: Marketing -->
 <div class="mkt-tabs">
     <a href="discount-events.php" class="mkt-tab">
-        <span class="icon">🎉</span>
+        <i class="ph ph-confetti icon"></i>
         Sự kiện giảm giá
         <?php
         $__evCount = 0;
@@ -413,7 +426,7 @@ $typeLabels = [
         <?php endif; ?>
     </a>
     <a href="vouchers.php" class="mkt-tab active">
-        <span class="icon">🎟️</span>
+        <i class="ph ph-ticket icon"></i>
         Voucher / Mã giảm giá
         <span class="cnt"><?php echo $countAll; ?></span>
     </a>
@@ -422,31 +435,32 @@ $typeLabels = [
 <!-- FILTER TABS -->
 <div class="vch-filters">
     <a href="vouchers.php" class="vch-filter <?php echo $filter === '' ? 'active' : ''; ?>">
-        📋 Tất cả <span class="cnt"><?php echo $countAll; ?></span>
+        <i class="ph ph-list"></i> Tất cả <span class="cnt"><?php echo $countAll; ?></span>
     </a>
     <a href="vouchers.php?status=active" class="vch-filter <?php echo $filter === 'active' ? 'active' : ''; ?>">
-        ✅ Đang hoạt động <span class="cnt"><?php echo $countActive; ?></span>
+        <i class="ph ph-check-circle"></i> Đang hoạt động <span class="cnt"><?php echo $countActive; ?></span>
     </a>
     <a href="vouchers.php?status=used" class="vch-filter <?php echo $filter === 'used' ? 'active' : ''; ?>">
-        🚫 Hết lượt <span class="cnt"><?php echo $countUsed; ?></span>
+        <i class="ph ph-prohibit"></i> Hết lượt <span class="cnt"><?php echo $countUsed; ?></span>
     </a>
     <a href="vouchers.php?status=upcoming" class="vch-filter <?php echo $filter === 'upcoming' ? 'active' : ''; ?>">
-        ⏳ Sắp tới <span class="cnt"><?php echo $countUpcoming; ?></span>
+        <i class="ph ph-clock"></i> Sắp tới <span class="cnt"><?php echo $countUpcoming; ?></span>
     </a>
     <a href="vouchers.php?status=expired" class="vch-filter <?php echo $filter === 'expired' ? 'active' : ''; ?>">
-        ⏰ Hết hạn <span class="cnt"><?php echo $countExpired; ?></span>
+        <i class="ph ph-clock-countdown"></i> Hết hạn <span class="cnt"><?php echo $countExpired; ?></span>
     </a>
     <a href="vouchers.php?status=unlimited" class="vch-filter <?php echo $filter === 'unlimited' ? 'active' : ''; ?>">
-        ∞ Không giới hạn <span class="cnt"><?php echo $countUnlimited; ?></span>
+        <i class="ph ph-infinity"></i> Không giới hạn <span class="cnt"><?php echo $countUnlimited; ?></span>
     </a>
 </div>
 
 <!-- TABLE -->
 <div class="admin-card" style="padding:0;overflow:auto;">
     <?php if (empty($vouchers)): ?>
-        <p style="text-align:center;padding:3rem;color:var(--admin-text-muted);">
-            Không có voucher nào phù hợp với bộ lọc
-        </p>
+        <div class="vch-empty">
+            <i class="ph ph-tray"></i>
+            <p>Không có voucher nào phù hợp với bộ lọc</p>
+        </div>
     <?php else: ?>
         <table class="adm-table">
             <thead>
@@ -513,10 +527,12 @@ $typeLabels = [
                             <?php echo date('d/m/Y', strtotime($v['valid_to'])); ?>
                         </td>
 
-                        <!-- ✅ CỘT LƯỢT DÙNG -->
+                        <!-- LƯỢT DÙNG -->
                         <td class="vch-usage-cell">
                             <?php if ($usageLimit === 0): ?>
-                                <b style="color:#1d4ed8;font-size:1.3rem;">∞</b>
+                                <b style="color:#1d4ed8;">
+                                    <i class="ph ph-infinity"></i>
+                                </b>
                                 <small>đã dùng <?php echo $usedCount; ?></small>
                             <?php elseif ($usageLimit === 1): ?>
                                 <?php if ($usedCount >= 1): ?>
@@ -560,7 +576,7 @@ $typeLabels = [
                             <div class="vch-actions">
                                 <button type="button" class="btn-adm btn-adm--edit"
                                         onclick='editVoucher(<?php echo json_encode($v, JSON_HEX_APOS | JSON_HEX_QUOT); ?>)'>
-                                    ✏️ Sửa
+                                    <i class="ph ph-pencil-simple"></i> Sửa
                                 </button>
 
                                 <?php if ($usedCount > 0): ?>
@@ -570,7 +586,7 @@ $typeLabels = [
                                         <input type="hidden" name="action" value="reset">
                                         <input type="hidden" name="id" value="<?php echo (int)$v['id']; ?>">
                                         <button type="submit" class="btn-adm btn-adm--ghost" title="Reset lượt dùng">
-                                            🔄
+                                            <i class="ph ph-arrows-clockwise"></i>
                                         </button>
                                     </form>
                                 <?php endif; ?>
@@ -580,7 +596,9 @@ $typeLabels = [
                                     <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                                     <input type="hidden" name="action" value="delete">
                                     <input type="hidden" name="id" value="<?php echo (int)$v['id']; ?>">
-                                    <button type="submit" class="btn-adm btn-adm--delete">🗑</button>
+                                    <button type="submit" class="btn-adm btn-adm--delete" title="Xóa">
+                                        <i class="ph ph-trash"></i>
+                                    </button>
                                 </form>
                             </div>
                         </td>
@@ -596,7 +614,9 @@ $typeLabels = [
      ============================================================ -->
 <div class="adm-modal" id="voucherModal">
     <div class="adm-modal__box" style="max-width:620px;">
-        <button type="button" class="adm-modal__close" onclick="closeVoucherModal()">×</button>
+        <button type="button" class="adm-modal__close" onclick="closeVoucherModal()">
+            <i class="ph ph-x"></i>
+        </button>
         <h2 class="adm-modal__title" id="voucherModalTitle">Thêm voucher</h2>
 
         <form method="POST">
@@ -614,9 +634,9 @@ $typeLabels = [
                 <div class="adm-form-group">
                     <label>Loại</label>
                     <select name="type" id="v_type" class="adm-select">
-                        <option value="public">🌐 Công khai</option>
-                        <option value="birthday">🎂 Sinh nhật</option>
-                        <option value="manual">✍️ Thủ công</option>
+                        <option value="public">Công khai</option>
+                        <option value="birthday">Sinh nhật</option>
+                        <option value="manual">Thủ công</option>
                     </select>
                 </div>
             </div>
@@ -640,9 +660,11 @@ $typeLabels = [
                        min="0" step="1000" value="0">
             </div>
 
-            <!-- ✅ SỐ LƯỢT DÙNG -->
+            <!-- SỐ LƯỢT DÙNG -->
             <div class="adm-form-group" style="background:#faf7f1;padding:14px;border-radius:8px;border:1px dashed #e8e0d0;">
-                <label style="color:#a8461f;font-weight:700;">🔢 Số lần sử dụng tối đa *</label>
+                <label style="color:#a8461f;font-weight:700;">
+                    <i class="ph ph-hash"></i> Số lần sử dụng tối đa *
+                </label>
                 <input type="number" name="usage_limit" id="v_usage_limit" class="adm-input"
                        min="0" value="1" required
                        style="font-family:'IBM Plex Mono',monospace;font-size:1rem;font-weight:700;">
@@ -652,7 +674,7 @@ $typeLabels = [
                     <button type="button" onclick="setUsageLimit(5)">Dùng 5 lần</button>
                     <button type="button" onclick="setUsageLimit(10)">Dùng 10 lần</button>
                     <button type="button" onclick="setUsageLimit(100)">Dùng 100 lần</button>
-                    <button type="button" onclick="setUsageLimit(0)">∞ Không giới hạn</button>
+                    <button type="button" onclick="setUsageLimit(0)">Không giới hạn</button>
                 </div>
 
                 <div style="font-size:0.75rem;color:var(--admin-text-muted);margin-top:10px;line-height:1.6;">
@@ -689,11 +711,11 @@ $typeLabels = [
                 <button type="button" class="btn-adm btn-adm--ghost"
                         style="flex:1;justify-content:center;padding:0.85rem"
                         onclick="closeVoucherModal()">
-                    Hủy
+                    <i class="ph ph-x"></i> Hủy
                 </button>
                 <button type="submit" class="btn-adm btn-adm--primary"
                         style="flex:2;justify-content:center;padding:0.85rem">
-                    💾 Lưu voucher
+                    <i class="ph ph-floppy-disk"></i> Lưu voucher
                 </button>
             </div>
         </form>

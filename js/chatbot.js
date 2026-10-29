@@ -1,6 +1,6 @@
 // ==========================================================================
 // Chatbot tư vấn — Thiết kế theo Atelier System (Ink / Ivory / Rust)
-// Backend: chatbot.php → includes/chatbot_helper.php (Hybrid: Rule + Groq)
+// Backend: chatbot.php → includes/chatbot_helper.php (Hybrid: Rule + Groq/OpenAI)
 // ==========================================================================
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -46,64 +46,142 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let isSending = false;
     let hasWelcomeMessage = false;
+    let typingTimer = null;
 
-    // 4. Các hàm tiện ích (Helpers)
-
-    // Parse Markdown đơn giản sang HTML an toàn (khớp cú pháp helper)
+    // ==========================================================
+    // 4. Helpers — Markdown, message, scroll
+    // ==========================================================
     function parseMarkdown(text) {
         if (!text) return '';
         return text
             .replace(/&/g, '&amp;')
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')   // **bold**
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')               // *italic*
-            .replace(/`([^`]+)`/g, '<code>$1</code>')           // `code`
-            .replace(/^\s*[\-\*]\s+(.*)$/gim, '• $1')           // bullet list
+            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.*?)\*/g, '<em>$1</em>')
+            .replace(/`([^`]+)`/g, '<code>$1</code>')
+            .replace(/^\s*[\-\*]\s+(.*)$/gim, '• $1')
             .replace(/\n/g, '<br>');
     }
 
-    // Thêm tin nhắn
     function addMessage(sender, text) {
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${sender}`;
-
         if (sender === 'bot') {
             msgDiv.innerHTML = parseMarkdown(text);
         } else {
-            msgDiv.textContent = text; // User text giữ nguyên — an toàn XSS
+            msgDiv.textContent = text;
         }
-
         messagesDiv.appendChild(msgDiv);
         scrollToBottom();
         return msgDiv;
     }
 
-    // Hiệu ứng "Đang nhập..."
-    function showTyping() {
-        const typing = document.createElement('div');
-        typing.className = 'message bot chat-typing';
-        typing.id = 'chat-typing';
-        typing.innerHTML = '<span></span><span></span><span></span>';
-        messagesDiv.appendChild(typing);
-        scrollToBottom();
-    }
-
-    function hideTyping() {
-        const typing = document.getElementById('chat-typing');
-        if (typing) typing.remove();
-    }
-
-    // Tự động cuộn xuống tin nhắn mới nhất
     function scrollToBottom() {
         messagesDiv.scrollTop = messagesDiv.scrollHeight;
     }
 
-    // Hiển thị danh sách sản phẩm gợi ý — KHỚP shape của chatbot_make_card()
-    // {
-    //   id, name, slug, url,
-    //   price (number - giá bán cuối), old_price (number|null), image_url
-    // }
+    // ==========================================================
+    // 5. ESTIMATE COMPLEXITY — mirror heuristic của backend
+    //    (dùng để chọn thinking indicator phù hợp từ đầu)
+    // ==========================================================
+    function estimateComplexity(text) {
+        const len = text.trim().length;
+        const questionCount = (text.match(/\?/g) || []).length;
+        const connectorCount = (text.match(/(và|hoặc|nhưng|thì|với|cùng|so sánh|khác nhau|ngoài ra|bên cạnh)/gi) || []).length;
+        const needsAnalysis = /(so sánh|khác nhau|tại sao|vì sao|nên chọn|cách chọn|phân tích|ưu nhược|phù hợp với|tư vấn chi tiết|kết hợp|gợi ý outfit|set đồ|mix match)/i.test(text);
+
+        let score = 0;
+        if (len > 80)              score += 1;
+        if (len > 200)             score += 2;
+        if (questionCount >= 2)    score += 1;
+        if (questionCount >= 3)    score += 1;
+        if (connectorCount >= 2)   score += 1;
+        if (needsAnalysis)         score += 2;
+
+        if (score >= 5) return 'complex';
+        if (score >= 2) return 'medium';
+        return 'simple';
+    }
+
+    function getThinkingConfig(level) {
+        if (level === 'complex') {
+            return {
+                messages: [
+                    'Đang phân tích câu hỏi...',
+                    'Đang đối chiếu thông tin sản phẩm...',
+                    'Đang tổng hợp câu trả lời chi tiết...'
+                ],
+                intervalMs: 3500,
+                minDelayMs: 6000
+            };
+        }
+        if (level === 'medium') {
+            return {
+                messages: [
+                    'Đang xem xét...',
+                    'Đang chuẩn bị câu trả lời...'
+                ],
+                intervalMs: 2500,
+                minDelayMs: 2000
+            };
+        }
+        return {
+            messages: ['Đang trả lời...'],
+            intervalMs: 0,
+            minDelayMs: 500
+        };
+    }
+
+    // ==========================================================
+    // 6. THINKING INDICATOR — 3 chấm + text xoay vòng
+    // ==========================================================
+    function showTyping(config) {
+        hideTyping();
+
+        const typing = document.createElement('div');
+        typing.id = 'chat-typing';
+        typing.className = 'message bot cb-thinking';
+        typing.innerHTML = `
+            <span class="cb-thinking__dots" aria-hidden="true">
+                <span class="cb-dot"></span>
+                <span class="cb-dot"></span>
+                <span class="cb-dot"></span>
+            </span>
+            <span class="cb-thinking__text">${config.messages[0]}</span>
+        `;
+        messagesDiv.appendChild(typing);
+        scrollToBottom();
+
+        if (config.messages.length > 1 && config.intervalMs > 0) {
+            let idx = 0;
+            typingTimer = setInterval(() => {
+                idx = (idx + 1) % config.messages.length;
+                const txt = typing.querySelector('.cb-thinking__text');
+                if (txt) {
+                    txt.style.opacity = '0';
+                    setTimeout(() => {
+                        txt.textContent = config.messages[idx];
+                        txt.style.opacity = '1';
+                    }, 200);
+                }
+            }, config.intervalMs);
+        }
+    }
+
+    function hideTyping() {
+        if (typingTimer) {
+            clearInterval(typingTimer);
+            typingTimer = null;
+        }
+        const typing = document.getElementById('chat-typing');
+        if (typing) typing.remove();
+    }
+
+    // ==========================================================
+    // 7. HIỂN THỊ SẢN PHẨM — shape từ chatbot_make_card():
+    //    { id, name, slug, url, price, old_price, image_url }
+    // ==========================================================
     function displayProducts(products) {
         if (!Array.isArray(products) || products.length === 0) return;
 
@@ -113,7 +191,6 @@ document.addEventListener('DOMContentLoaded', () => {
         products.forEach(product => {
             if (!product || !product.id) return;
 
-            // Ưu tiên url do backend trả (ổn định khi đổi routing), fallback ?id=
             const href     = product.url || `product-details.php?id=${encodeURIComponent(product.id)}`;
             const imageUrl = product.image_url || 'images/placeholder.jpg';
 
@@ -126,12 +203,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             let priceHtml = `<span class="product-card-mini__price">${priceFormatted}</span>`;
 
-            // Có giá gốc (đang sale) → gạch ngang
             if (oldPrice > price && price > 0) {
-                priceHtml += ` <span class="product-card-mini__price-old"
-                    style="text-decoration: line-through; opacity: 0.6; font-size: 0.85em;">
-                    ${oldPrice.toLocaleString('vi-VN')}₫
-                </span>`;
+                priceHtml += ` <span class="product-card-mini__price-old" style="text-decoration: line-through; opacity: 0.6; font-size: 0.85em;">${oldPrice.toLocaleString('vi-VN')}₫</span>`;
             }
 
             const card = document.createElement('a');
@@ -156,22 +229,22 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 5. GỬI TIN NHẮN — Typing delay ngắn (Groq phản hồi < 1s)
-    const TYPING_MIN = 500;   // 0.5s — vẫn giữ cảm giác "đang gõ"
-    const TYPING_MAX = 1000;  // 1.0s — đủ cho Groq trả lời xong
-
+    // ==========================================================
+    // 8. GỬI TIN NHẮN
+    // ==========================================================
     async function sendMessage() {
         const text = input.value.trim();
         if (!text || isSending) return;
 
-        // Delay mục tiêu ngẫu nhiên cho lần này
-        const targetDelay = TYPING_MIN + Math.random() * (TYPING_MAX - TYPING_MIN);
+        // (a) Ước lượng complexity — chọn indicator + minDelay
+        const level  = estimateComplexity(text);
+        const config = getThinkingConfig(level);
 
         addMessage('user', text);
         input.value = '';
         isSending = true;
         sendBtn.disabled = true;
-        showTyping();
+        showTyping(config);
 
         const startTime = Date.now();
 
@@ -188,14 +261,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const data = await response.json();
 
-            // Đợi đủ delay mục tiêu (nếu backend đã trả về sớm hơn)
+            // (b) Đảm bảo hiển thị thinking đủ minDelay
             const elapsed   = Date.now() - startTime;
-            const remaining = targetDelay - elapsed;
+            const remaining = config.minDelayMs - elapsed;
             if (remaining > 0) {
                 await new Promise(resolve => setTimeout(resolve, remaining));
             }
 
             hideTyping();
+
+            // (c) Log complexity (client đoán vs backend xác nhận)
+            if (data._debug && data._debug.complexity) {
+                const bc = data._debug.complexity.level;
+                if (bc !== level) {
+                    console.info(`[chatbot] complexity: client=${level} → server=${bc} (source: ${data._debug.source})`);
+                }
+            }
 
             if (data.message) {
                 addMessage('bot', data.message);
@@ -208,13 +289,13 @@ document.addEventListener('DOMContentLoaded', () => {
             console.error('Chatbot Error:', error);
 
             const elapsed   = Date.now() - startTime;
-            const remaining = targetDelay - elapsed;
+            const remaining = config.minDelayMs - elapsed;
             if (remaining > 0) {
                 await new Promise(resolve => setTimeout(resolve, remaining));
             }
 
             hideTyping();
-            addMessage('bot', 'Rất tiếc, đã có lỗi kết nối xảy ra. Vui lòng thử lại sau.');
+            addMessage('bot', 'Rất tiếc, đã có lỗi kết nối xảy ra. Vui lòng thử lại sau hoặc gọi hotline 1900 123 456.');
         } finally {
             isSending = false;
             sendBtn.disabled = false;
@@ -222,7 +303,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 6. Gán các sự kiện
+    // ==========================================================
+    // 9. Gán sự kiện
+    // ==========================================================
     form.addEventListener('submit', (e) => {
         e.preventDefault();
         sendMessage();
@@ -237,7 +320,6 @@ document.addEventListener('DOMContentLoaded', () => {
         chatbox.classList.add('is-open');
         chatToggle.classList.remove('is-visible');
 
-        // Tin nhắn chào mừng lần đầu mở
         if (!hasWelcomeMessage) {
             addMessage('bot', 'Xin chào! Mình có thể hỗ trợ bạn tư vấn size, phí ship, chính sách đổi trả, mã giảm giá hoặc tìm sản phẩm. Bạn cần hỗ trợ gì ạ?');
             hasWelcomeMessage = true;
@@ -246,7 +328,6 @@ document.addEventListener('DOMContentLoaded', () => {
         setTimeout(() => input.focus(), 100);
     });
 
-    // Đóng chatbox khi nhấn ESC
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && chatbox.classList.contains('is-open')) {
             chatbox.classList.remove('is-open');
@@ -254,7 +335,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // 7. Khởi tạo ban đầu
+    // 10. Khởi tạo
     chatbox.classList.remove('is-open');
     chatToggle.classList.add('is-visible');
 });
