@@ -258,6 +258,9 @@ $priorityMap = [
         display:inline-flex; align-items:center; gap:0.4rem; transition:all 0.15s;
     }
     .adm-notif .btn-mark-all:hover { background:#fbf9f5; border-color:#c8bfa9; }
+
+    /* Keyframes cho hiệu ứng xoay của icon loading */
+    @keyframes spin { 100% { transform: rotate(360deg); } }
 </style>
 
 <div class="adm-notif">
@@ -272,9 +275,6 @@ $priorityMap = [
         <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
             <button type="button" id="btnScanStock" class="btn-mark-all" style="background:#a8461f;color:#fff;border-color:#a8461f;">
                 <i class="ph ph-package"></i> Quét SP sắp hết
-            </button>
-            <button type="button" id="btnSeedTest" class="btn-mark-all">
-                <i class="ph ph-flask"></i> Tạo dữ liệu mẫu
             </button>
             <?php if ($unread > 0): ?>
                 <a href="notifications.php?mark_all=1" class="btn-mark-all"
@@ -372,60 +372,41 @@ function markRead(id, el) {
 </script>
 <script>
 /* ============================================================
-   NÚT QUÉT SP SẮP HẾT
+   NÚT QUÉT SP SẮP HẾT (ĐÃ FIX LỖI KẾT NỐI SERVER)
    ============================================================ */
 document.getElementById('btnScanStock').addEventListener('click', function () {
     var btn = this;
     var old = btn.innerHTML;
     btn.disabled = true;
-    btn.innerHTML = '<i class="ph ph-spinner-gap"></i> Đang quét...';
+    btn.innerHTML = '<i class="ph ph-spinner-gap" style="animation: spin 1s linear infinite;"></i> Đang quét...';
 
     var fd = new FormData();
     fd.append('csrf_token', '<?php echo $_SESSION['csrf_token']; ?>');
 
+    // Lưu ý: File run_stock_check.php phải nằm CÙNG THƯ MỤC với notifications.php
     fetch('run_stock_check.php', { method: 'POST', body: fd })
-        .then(function (r) { return r.json(); })
+        .then(async function (r) {
+            const text = await r.text();
+            try {
+                return JSON.parse(text);
+            } catch (e) {
+                // In ra lỗi chi tiết nếu file PHP bị lỗi cú pháp hoặc trả về HTML
+                console.error('Dữ liệu trả về từ server:', text);
+                throw new Error('File run_stock_check.php đang bị lỗi PHP (không trả về JSON). Vui lòng mở Console (F12) để xem chi tiết.');
+            }
+        })
         .then(function (d) {
-            alert(d.msg || (d.ok ? 'Thành công' : 'Lỗi'));
-            if (d.ok) location.reload();
-            else {
+            if (d.ok) {
+                alert(d.msg || 'Quét thành công!');
+                location.reload();
+            } else {
+                alert(d.msg || 'Có lỗi xảy ra trong quá trình quét.');
                 btn.disabled = false;
                 btn.innerHTML = old;
             }
         })
-        .catch(function () {
-            alert('Không kết nối được server');
-            btn.disabled = false;
-            btn.innerHTML = old;
-        });
-});
-
-/* ============================================================
-   NÚT TẠO DỮ LIỆU MẪU
-   ============================================================ */
-document.getElementById('btnSeedTest').addEventListener('click', function () {
-    if (!confirm('Tạo 12 thông báo mẫu để test giao diện?\n(Nên xóa sau khi test xong)')) return;
-
-    var btn = this;
-    var old = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<i class="ph ph-spinner-gap"></i> Đang tạo...';
-
-    var fd = new FormData();
-    fd.append('csrf_token', '<?php echo $_SESSION['csrf_token']; ?>');
-
-    fetch('seed_test_notifications.php', { method: 'POST', body: fd })
-        .then(function (r) { return r.json(); })
-        .then(function (d) {
-            alert(d.msg || (d.ok ? 'Thành công' : 'Lỗi'));
-            if (d.ok) location.reload();
-            else {
-                btn.disabled = false;
-                btn.innerHTML = old;
-            }
-        })
-        .catch(function () {
-            alert('Không kết nối được server');
+        .catch(function (err) {
+            alert('Lỗi: ' + err.message);
             btn.disabled = false;
             btn.innerHTML = old;
         });

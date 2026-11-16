@@ -30,6 +30,7 @@ $menuCounts = [
     'noreply_reviews'  => 0,
     'pending_returns'  => 0,
     'unread_notifs'    => 0,
+    'pending_support'  => 0,
 ];
 
 try {
@@ -49,7 +50,12 @@ try {
         SELECT COUNT(*) FROM return_requests WHERE status = 'pending'
     ")->fetchColumn();
 } catch (Exception $e) {}
-
+// Thêm đoạn này vào dưới các khối try/catch đếm số liệu cũ
+try {
+    $menuCounts['pending_support'] = (int)$pdo->query("
+        SELECT COUNT(*) FROM support_requests WHERE status = 'new'
+    ")->fetchColumn();
+} catch (Exception $e) {}
 try {
     $menuCounts['unread_notifs'] = (int)$pdo->query("
         SELECT COUNT(*) FROM admin_notifications WHERE is_read = 0
@@ -1111,6 +1117,17 @@ $pageTitle = $pageTitles[$currentPage] ?? 'Quản trị';
             </li>
 
             <li class="admin-nav__section">Hệ thống</li>
+            <li>
+                <a href="support.php" class="<?php echo $currentPage === 'support.php' ? 'active' : ''; ?>">
+                    <i class="ph ph-headset"></i> Yêu cầu hỗ trợ
+                    <?php
+                    $__badgeSupport = admBadgeCount($menuCounts['pending_support']);
+                    if ($__badgeSupport !== ''):
+                    ?>
+                        <span class="nav-badge nav-badge--orange"><?php echo $__badgeSupport; ?></span>
+                    <?php endif; ?>
+                </a>
+            </li>
 
             <li>
                 <a href="settings.php" class="<?php echo $currentPage === 'settings.php' ? 'active' : ''; ?>">

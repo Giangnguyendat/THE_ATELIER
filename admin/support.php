@@ -1,5 +1,6 @@
 <?php
 require_once '../includes/config.php';
+/** @var PDO $pdo */  // <-- Thêm dòng này để VS Code hiểu $pdo là biến toàn cục
 include 'includes/admin_header.php';
 
 /* ============================================================
@@ -195,7 +196,12 @@ $statusMap = [
     .adm-sup .sup-preview {
         font-size:0.85rem; color:#4b5563; line-height:1.55;
         overflow:hidden; text-overflow:ellipsis;
-        display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+        
+        /* Sửa lại đoạn này */
+        display:-webkit-box; 
+        -webkit-line-clamp:2; 
+        line-clamp: 2; /* Thêm dòng này để hết cảnh báo */
+        -webkit-box-orient:vertical;
     }
     .adm-sup .sup-meta {
         font-size:0.78rem; color:var(--c-muted); margin-bottom:4px;
@@ -482,13 +488,14 @@ $statusMap = [
                 $stInfo  = $statusMap[$r['status']] ?? ['Không rõ', 'adm-badge--gray'];
                 // Chuyển emoji sang Phosphor Icons
                 $iconMap = [
-                    'order'    => 'ph-package', 
-                    'return'   => 'ph-arrows-clockwise', 
-                    'payment'  => 'ph-credit-card',
-                    'product'  => 'ph-t-shirt', 
-                    'shipping' => 'ph-truck', 
-                    'account'  => 'ph-user',
-                    'other'    => 'ph-chat-circle',
+                    'đơn hàng' => 'ph-package', 
+                    'đổi trả'  => 'ph-arrows-clockwise', 
+                    'hoàn tiền'=> 'ph-arrows-clockwise',
+                    'thanh toán'=> 'ph-credit-card',
+                    'sản phẩm' => 'ph-t-shirt', 
+                    'vận chuyển'=> 'ph-truck', 
+                    'tài khoản'=> 'ph-user',
+                    'khác'     => 'ph-chat-circle',
                 ];
                 $iconClass = 'ph-chat-circle';
                 foreach ($iconMap as $k => $v) {
@@ -666,15 +673,24 @@ function renderSupportDetail(d) {
     html += '<div>';
     html += '<label>Sau khi gửi</label>';
     html += '<select id="supReplyStatus">';
-    // Thêm option mặc định nếu trạng thái hiện tại không nằm trong danh sách
-    if (!['resolved', 'processing', 'closed'].includes(r.status)) {
-        html += '<option value="processing" selected>Đánh dấu đang xử lý</option>';
+    
+    // Cấu hình các trạng thái
+    var replyStatuses = {
+        'processing': 'Đánh dấu đang xử lý',
+        'resolved':   'Đánh dấu đã giải quyết',
+        'closed':     'Đóng yêu cầu'
+    };
+    
+    // Nếu trạng thái cũ là 'new' (Mới) thì mặc định chọn 'processing' (Đang xử lý)
+    var currentStatus = (r.status === 'new') ? 'processing' : r.status;
+
+    // Duyệt qua danh sách để in ra thẻ option, tự động thêm 'selected' nếu đúng trạng thái
+    for (var stKey in replyStatuses) {
+        var selected = (stKey === currentStatus) ? 'selected' : '';
+        html += '<option value="' + stKey + '" ' + selected + '>' + replyStatuses[stKey] + '</option>';
     }
-    html += '<option value="resolved" ' + (r.status === 'resolved' ? 'selected' : '') + '>Đánh dấu đã giải quyết</option>';
-    html += '<option value="processing" ' + (r.status === 'processing' ? 'selected' : '') + '>Đánh dấu đang xử lý</option>';
-    html += '<option value="closed" ' + (r.status === 'closed' ? 'selected' : '') + '>Đóng yêu cầu</option>';
+    
     html += '</select>';
-    html += '</div>';
     html += '</div>';
 
     html += '<div>';

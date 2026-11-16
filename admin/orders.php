@@ -30,18 +30,22 @@ if (in_array($payFilter, ['unpaid','pending','paid','refund_pending'], true)) {
     $where[]  = 'o.payment_status = ?';
     $params[] = $payFilter;
 }
-
 // Tìm kiếm
 if ($search !== '') {
     $where[]  = "(o.id = ? OR o.full_name LIKE ? OR o.phone LIKE ? OR u.email LIKE ?)";
-    $params[] = is_numeric($search) ? (int)$search : 0;
+    
+    // Xử lý loại bỏ dấu # nếu người dùng nhập mã đơn (VD: #45 -> 45)
+    $searchId = str_replace('#', '', $search);
+    
+    // Nếu sau khi bỏ # mà là số thì ép kiểu int, ngược lại gán = 0 để không khớp
+    $params[] = is_numeric($searchId) ? (int)$searchId : 0;
+    
+    // Các tham số còn lại giữ nguyên để tìm theo tên, SĐT, email
     $params[] = "%$search%";
     $params[] = "%$search%";
     $params[] = "%$search%";
 }
-
 $whereSQL = $where ? 'WHERE ' . implode(' AND ', $where) : '';
-
 $stmt = $pdo->prepare("
     SELECT o.*,
            u.full_name AS user_name,
@@ -718,6 +722,7 @@ function renderOrderDetail(o, items) {
     html += '<span style="display:inline-block;padding:2px 10px;border-radius:999px;font-size:0.78rem;font-weight:700;color:'
          + (payStatusColor[ps] || '#57534e') + ';background:' + (payStatusBg[ps] || '#f5f5f4') + ';">'
          + psLabel + '</span></div>';
+    
     html += '</div></div></div>';
 
     // Nếu có lý do hủy

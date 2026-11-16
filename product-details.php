@@ -161,6 +161,36 @@ include 'includes/header.php';
         color: #1c1b19;
         line-height: 1.6;
     }
+
+    /* ============ CSS CHO ICON SVG ============ */
+    .icon-svg {
+        display: inline-block;
+        vertical-align: middle;
+        width: 16px;
+        height: 16px;
+        margin-right: 6px;
+        margin-top: -2px;
+    }
+    .icon-svg--fire { color: #ef4444; }
+    .icon-svg--star { color: #f59e0b; fill: #f59e0b; stroke: none; }
+    .icon-svg--box { color: #d97706; }
+    .icon-svg--gift { color: #a8461f; }
+    .icon-svg--check { color: #16a34a; }
+    .icon-svg--cart { color: currentColor; }
+
+    /* ============ CSS CHO AI SIZE PREDICTOR ============ */
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(-10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    #aiSizeWidget input:focus, #aiSizeWidget select:focus {
+        outline: none;
+        border-color: #1d4ed8 !important;
+        box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.1);
+    }
+    @keyframes spin {
+        100% { transform: rotate(360deg); }
+    }
 </style>
 
 <main class="pd-wrap">
@@ -205,14 +235,20 @@ include 'includes/header.php';
             <!-- Meta stats: đã bán + đánh giá -->
             <div class="pd-meta-stats">
                 <div class="pd-stat">
-                    <span class="pd-stat__icon">🔥</span>
+                    <!-- Icon Lửa (Đã bán) -->
+                    <span class="pd-stat__icon">
+                        <svg class="icon-svg icon-svg--fire" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0011 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 11-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 002.5 2.5z"></path></svg>
+                    </span>
                     <span class="pd-stat__text">
                         <b><?php echo (int)$product['sold_count']; ?></b> đã bán
                     </span>
                 </div>
 
                 <div class="pd-stat">
-                    <span class="pd-stat__icon">⭐</span>
+                    <!-- Icon Ngôi sao (Đánh giá) -->
+                    <span class="pd-stat__icon">
+                        <svg class="icon-svg icon-svg--star" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+                    </span>
                     <span class="pd-stat__text">
                         <?php if ($totalReviews > 0): ?>
                             <b><?php echo number_format($avgRating, 1); ?></b>/5
@@ -227,7 +263,10 @@ include 'includes/header.php';
 
                 <?php if ($totalStock > 0 && $totalStock <= 10): ?>
                     <div class="pd-stat">
-                        <span class="pd-stat__icon">📦</span>
+                        <!-- Icon Hộp (Kho) -->
+                        <span class="pd-stat__icon">
+                            <svg class="icon-svg icon-svg--box" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                        </span>
                         <span class="pd-stat__text" style="color:#d97706;">
                             Chỉ còn <b><?php echo $totalStock; ?></b> sản phẩm
                         </span>
@@ -237,7 +276,9 @@ include 'includes/header.php';
 
             <?php if ($isEvent && $eventName): ?>
                 <div class="event-banner">
-                    🎉 Đang diễn ra: <strong><?php echo attr_encode($eventName); ?></strong>
+                    <!-- Icon Hộp quà (Sự kiện) -->
+                    <svg class="icon-svg icon-svg--gift" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 12 20 22 4 22 4 12"></polyline><rect x="2" y="7" width="20" height="5"></rect><line x1="12" y1="22" x2="12" y2="7"></line><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"></path><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"></path></svg>
+                    Đang diễn ra: <strong><?php echo attr_encode($eventName); ?></strong>
                     — giảm <strong><?php echo (int)$discountPct; ?>%</strong> cho sản phẩm này!
                 </div>
             <?php endif; ?>
@@ -264,10 +305,16 @@ include 'includes/header.php';
                 <div class="pd-field">
                     <label class="pd-label">
                         <span>Chọn kích thước</span>
-                        <a href="support.php?tab=size-guide" target="_blank"
-                           style="color:#a8461f;text-decoration:none;font-weight:600;letter-spacing:0.06em;font-size:0.7rem;">
-                            Bảng size →
-                        </a>
+                        <div style="display:flex; gap:12px; align-items:center;">
+                            <!-- NÚT AI TƯ VẤN -->
+                            <a href="javascript:void(0)" onclick="toggleAiSizeWidget()" style="color:#1d4ed8; font-weight:700; text-decoration:none; font-size:0.72rem; display:inline-flex; align-items:center; gap:4px; background:#eff6ff; padding:2px 8px; border-radius:99px; border:1px solid #bfdbfe;">
+                                <i class="ph ph-sparkle"></i> AI Tư vấn Size
+                            </a>
+                            <a href="support.php?tab=size-guide" target="_blank"
+                               style="color:#a8461f;text-decoration:none;font-weight:600;letter-spacing:0.06em;font-size:0.7rem;">
+                                Bảng size →
+                            </a>
+                        </div>
                     </label>
 
                     <div class="pd-sizes">
@@ -275,7 +322,6 @@ include 'includes/header.php';
                             $stock    = (int)($stocks[$sz] ?? 0);
                             $disabled = $stock <= 0;
 
-                            // Auto-check size M, hoặc size đầu tiên còn hàng
                             $checked = '';
                             if (!$disabled && $sz === 'M') {
                                 $checked = 'checked';
@@ -290,6 +336,56 @@ include 'includes/header.php';
                                 </span>
                             </label>
                         <?php endforeach; ?>
+                    </div>
+
+                    <!-- KHỐI WIDGET AI CHỌN SIZE -->
+                    <div id="aiSizeWidget" style="display:none; margin-top:16px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:16px; animation: fadeIn 0.3s ease;">
+                        <input type="hidden" id="aiProductId" value="<?php echo (int)$product['id']; ?>">
+                        
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                            <strong style="color:#1e293b; font-size:0.9rem; display:flex; align-items:center; gap:6px;">
+                                <i class="ph-fill ph-magic-wand" style="color:#1d4ed8;"></i> Trợ lý AI Dự đoán Size
+                            </strong>
+                            <button type="button" onclick="toggleAiSizeWidget()" style="background:none; border:none; color:#94a3b8; cursor:pointer; font-size:1.2rem;">&times;</button>
+                        </div>
+                        
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:12px;">
+                            <div>
+                                <label style="display:block; font-size:0.75rem; color:#64748b; margin-bottom:4px;">Chiều cao (cm)</label>
+                                <input type="number" id="aiHeight" placeholder="VD: 170" style="width:100%; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px; font-family:inherit;">
+                            </div>
+                            <div>
+                                <label style="display:block; font-size:0.75rem; color:#64748b; margin-bottom:4px;">Cân nặng (kg)</label>
+                                <input type="number" id="aiWeight" placeholder="VD: 65" style="width:100%; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px; font-family:inherit;">
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom:12px;">
+                            <label style="display:block; font-size:0.75rem; color:#64748b; margin-bottom:4px;">Dáng người</label>
+                            <select id="aiBodyType" style="width:100%; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px; font-family:inherit;">
+                                <option value="gay">Gầy (Mảnh khảnh)</option>
+                                <option value="can_doi" selected>Cân đối</option>
+                                <option value="day_dan">Đầy đặn (Có da có thịt)</option>
+                            </select>
+                        </div>
+
+                        <div style="margin-bottom:14px;">
+                            <label style="display:block; font-size:0.75rem; color:#64748b; margin-bottom:4px;">Sở thích mặc</label>
+                            <select id="aiFitPref" style="width:100%; padding:8px 12px; border:1px solid #cbd5e1; border-radius:6px; font-family:inherit;">
+                                <option value="vua_van" selected>Vừa vặn</option>
+                                <option value="om_sat">Ôm sát (Thể hiện đường cong)</option>
+                                <option value="oversize">Oversize (Rộng rãi thoải mái)</option>
+                            </select>
+                        </div>
+
+                        <button type="button" onclick="runAiSizePredictor()" style="width:100%; padding:10px; background:#1d4ed8; color:#fff; border:none; border-radius:6px; font-weight:700; cursor:pointer; transition:0.2s;">
+                            Dự đoán Size phù hợp
+                        </button>
+
+                        <!-- Khung kết quả -->
+                        <div id="aiResultBox" style="display:none; margin-top:16px; padding:12px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; color:#1e3a8a; font-size:0.85rem; line-height:1.5;">
+                            <!-- Nội dung kết quả sẽ được JS chèn vào đây -->
+                        </div>
                     </div>
 
                     <p id="pdStockNote"></p>
@@ -308,16 +404,27 @@ include 'includes/header.php';
                 <!-- ACTIONS -->
                 <div class="pd-actions">
                     <button type="submit" class="pd-btn pd-btn--cart">
-                        🛒 Thêm vào giỏ hàng
+                        <!-- Icon Giỏ hàng (SVG) -->
+                        <svg class="icon-svg icon-svg--cart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:18px; height:18px; margin-right:8px; vertical-align:middle;"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+                        Thêm vào giỏ hàng
                     </button>
                     <a href="cart.php" class="pd-btn pd-btn--ghost">Xem giỏ hàng</a>
                 </div>
             </form>
 
             <ul class="pd-perks">
-                <li>✓ Miễn phí vận chuyển đơn từ 500.000₫</li>
-                <li>✓ Đổi trả trong 7 ngày</li>
-                <li>✓ Hàng chính hãng 100%</li>
+                <li>
+                    <svg class="icon-svg icon-svg--check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                    Miễn phí vận chuyển đơn từ 500.000₫
+                </li>
+                <li>
+                    <svg class="icon-svg icon-svg--check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                    Đổi trả trong 7 ngày
+                </li>
+                <li>
+                    <svg class="icon-svg icon-svg--check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                    Hàng chính hãng 100%
+                </li>
             </ul>
         </div>
     </div>
@@ -378,7 +485,10 @@ include 'includes/header.php';
                                 <?php endif; ?>
                             </div>
                             <?php if ($relPricing['source'] === 'event' && !empty($relPricing['event_name'])): ?>
-                                <span class="event-badge">🎉 <?php echo attr_encode($relPricing['event_name']); ?></span>
+                                <span class="event-badge">
+                                    <svg class="icon-svg" style="width:12px; height:12px; color:currentColor;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 12 20 22 4 22 4 12"></polyline><rect x="2" y="7" width="20" height="5"></rect><line x1="12" y1="22" x2="12" y2="7"></line><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"></path><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"></path></svg>
+                                    <?php echo attr_encode($relPricing['event_name']); ?>
+                                </span>
                             <?php endif; ?>
                             <a href="product-details.php?id=<?php echo $relId; ?>" class="btn-detail">Xem chi tiết</a>
                         </div>
@@ -408,7 +518,10 @@ include 'includes/header.php';
 
         <?php if (empty($reviews)): ?>
             <div class="pd-no-reviews">
-                <div style="font-size:3rem;opacity:0.4;margin-bottom:0.5rem;">💬</div>
+                <div style="opacity:0.4;margin-bottom:0.5rem;display:flex;justify-content:center;color:#a8461f;">
+                    <!-- Icon Bong bóng chat (SVG) -->
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+                </div>
                 <p style="margin:0;font-size:1rem;color:#374151;font-weight:600;">
                     Chưa có đánh giá nào
                 </p>
@@ -492,7 +605,6 @@ include 'includes/header.php';
 
                         <!-- KHỐI PHẢN HỒI CỦA ADMIN -->
                         <?php 
-                        // Kiểm tra nếu có cột admin_reply trong database
                         $adminReply = $rv['admin_reply'] ?? $rv['reply'] ?? null; 
                         $adminReplyAt = $rv['admin_replied_at'] ?? $rv['reply_at'] ?? null; 
                         
@@ -529,7 +641,7 @@ include 'includes/header.php';
     <img id="imageZoomTarget" src="" alt="">
 </div>
 
-<!-- Script tăng/giảm số lượng + stock -->
+<!-- Script tăng/giảm số lượng + stock + AI -->
 <script>
 (function () {
     var qty = document.getElementById('pdQty');
@@ -568,20 +680,21 @@ include 'includes/header.php';
 
         var note = document.getElementById('pdStockNote');
         if (note) {
+            // Sử dụng SVG thay thế emote cảnh báo
             if (!size) {
-                note.textContent = '⚠️ Vui lòng chọn size';
+                note.innerHTML = '<svg class="icon-svg" style="color:#b91c1c;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg> Vui lòng chọn size';
                 note.style.background = '#fef2f2';
                 note.style.color = '#b91c1c';
             } else if (stock <= 0) {
-                note.textContent = '⚠️ Size ' + size + ' đã hết hàng';
+                note.innerHTML = '<svg class="icon-svg" style="color:#b91c1c;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg> Size ' + size + ' đã hết hàng';
                 note.style.background = '#fef2f2';
                 note.style.color = '#b91c1c';
             } else if (stock <= 5) {
-                note.textContent = '🔥 Chỉ còn ' + stock + ' sản phẩm size ' + size;
+                note.innerHTML = '<svg class="icon-svg icon-svg--fire" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0011 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 11-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 002.5 2.5z"></path></svg> Chỉ còn ' + stock + ' sản phẩm size ' + size;
                 note.style.background = '#fff7ed';
                 note.style.color = '#c2410c';
             } else {
-                note.textContent = '✓ Còn ' + stock + ' sản phẩm size ' + size;
+                note.innerHTML = '<svg class="icon-svg icon-svg--check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg> Còn ' + stock + ' sản phẩm size ' + size;
                 note.style.background = '#f0fdf4';
                 note.style.color = '#166534';
             }
@@ -598,12 +711,10 @@ include 'includes/header.php';
 
     /* ---------- Auto chọn size M hoặc size đầu tiên còn hàng ---------- */
     if (!getSelectedSize()) {
-        // Ưu tiên M
         var mRadio = document.querySelector('.pd-size input[value="M"]');
         if (mRadio && !mRadio.disabled) {
             mRadio.checked = true;
         } else {
-            // Fallback: size đầu tiên còn hàng
             for (var i = 0; i < SIZE_ORDER.length; i++) {
                 var sz = SIZE_ORDER[i];
                 if ((parseInt(STOCKS[sz]) || 0) > 0) {
@@ -665,6 +776,123 @@ function openImageZoom(src) {
 function closeImageZoom() {
     document.getElementById('imageZoomModal').classList.remove('show');
     document.body.style.overflow = '';
+}
+
+/* ============================================================
+   AI FIT PREDICTOR (TƯ VẤN SIZE)
+   ============================================================ */
+function toggleAiSizeWidget() {
+    var widget = document.getElementById('aiSizeWidget');
+    if (widget.style.display === 'none') {
+        widget.style.display = 'block';
+    } else {
+        widget.style.display = 'none';
+    }
+}
+
+function runAiSizePredictor() {
+    var height = parseFloat(document.getElementById('aiHeight').value);
+    var weight = parseFloat(document.getElementById('aiWeight').value);
+    var bodyType = document.getElementById('aiBodyType').value;
+    var fitPref = document.getElementById('aiFitPref').value;
+    var productId = document.getElementById('aiProductId').value;
+    
+    var resultBox = document.getElementById('aiResultBox');
+
+    if (!height || !weight || height < 130 || height > 220 || weight < 30 || weight > 150) {
+        alert('Vui lòng nhập chiều cao (130-220cm) và cân nặng (30-150kg) hợp lệ.');
+        return;
+    }
+
+    // Hiển thị trạng thái đang tải
+    resultBox.innerHTML = `
+        <div style="display:flex; align-items:center; justify-content:center; gap:10px; padding:10px;">
+            <i class="ph ph-spinner-gap" style="font-size:1.5rem; color:#1d4ed8; animation: spin 1s linear infinite;"></i>
+            <span style="color:#1e3a8a; font-weight:600;">AI đang phân tích số đo của bạn...</span>
+        </div>
+    `;
+    resultBox.style.display = 'block';
+
+    // Chuẩn bị dữ liệu gửi lên server
+    var formData = new FormData();
+    formData.append('height', height);
+    formData.append('weight', weight);
+    formData.append('body_type', bodyType);
+    formData.append('fit_pref', fitPref);
+    formData.append('product_id', productId);
+
+    // Gọi API
+    fetch('ajax/ai_size_advisor.php', {
+        method: 'POST',
+        body: formData
+    })
+        .then(async function(r) {
+        var text = await r.text();
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            // Nếu PHP bị lỗi (trả về HTML), in ra màn hình để dễ sửa
+            console.error("Lỗi Server:", text);
+            throw new Error("Lỗi máy chủ: " + text.substring(0, 150));
+        }
+    })
+    .then(function(data) {
+        if (data.ok) {
+            var finalSize = data.size.toUpperCase();
+            
+            // Render kết quả
+            resultBox.innerHTML = `
+                <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+                    <i class="ph-fill ph-check-circle" style="color:#16a34a; font-size:1.2rem;"></i>
+                    <strong style="font-size:1rem; color:#166534;">Gợi ý: Size ${finalSize}</strong>
+                </div>
+                <p style="margin:0; font-size:0.85rem; line-height:1.6;">${data.explanation}</p>
+                <div style="margin-top:12px; padding-top:10px; border-top:1px dashed #bfdbfe; display:flex; justify-content:space-between; align-items:center;">
+                    <span style="font-size:0.75rem; color:#64748b; font-style:italic;">Dựa trên phân tích của Groq AI.</span>
+                    <button type="button" onclick="selectAiSize('${finalSize}')" style="background:#1d4ed8; color:#fff; border:none; padding:6px 12px; border-radius:6px; font-weight:600; font-size:0.75rem; cursor:pointer;">Chọn Size ${finalSize}</button>
+                </div>
+            `;
+        } else {
+            resultBox.innerHTML = `
+                <div style="display:flex; align-items:center; gap:8px; color:#b91c1c;">
+                    <i class="ph-fill ph-warning-circle" style="font-size:1.2rem;"></i>
+                    <span>${data.msg || 'Có lỗi xảy ra khi gọi AI.'}</span>
+                </div>
+                <button type="button" onclick="runAiSizePredictor()" style="margin-top:8px; background:#fff; border:1px solid #fecaca; color:#b91c1c; padding:6px 12px; border-radius:6px; font-weight:600; cursor:pointer;">Thử lại</button>
+            `;
+        }
+    })
+    .catch(function(err) {
+        resultBox.innerHTML = `
+            <div style="display:flex; flex-direction:column; gap:8px; color:#b91c1c;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <i class="ph-fill ph-warning-circle" style="font-size:1.2rem;"></i>
+                    <span><b>Lỗi:</b> ${err.message || 'Không thể kết nối tới máy chủ AI.'}</span>
+                </div>
+                <button type="button" onclick="runAiSizePredictor()" style="margin-top:8px; background:#fff; border:1px solid #fecaca; color:#b91c1c; padding:6px 12px; border-radius:6px; font-weight:600; cursor:pointer;">Thử lại</button>
+            </div>
+        `;
+    });
+}
+
+// Hàm tự động tick chọn Radio button Size khi khách đồng ý với gợi ý
+function selectAiSize(size) {
+    var radio = document.querySelector('.pd-size input[name="size"][value="' + size + '"]');
+    if (radio && !radio.disabled) {
+        radio.checked = true;
+        // Kích hoạt sự kiện thay đổi để JS cũ cập nhật lại tồn kho
+        radio.dispatchEvent(new Event('change'));
+        
+        // Cuộn lên vị trí chọn size
+        document.querySelector('.pd-sizes').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        
+        // Đổi màu nút báo hiệu thành công
+        var btn = document.querySelector('#aiResultBox button');
+        btn.innerHTML = '<i class="ph ph-check"></i> Đã chọn!';
+        btn.style.background = '#16a34a';
+    } else {
+        alert('Rất tiếc, Size ' + size + ' hiện đang tạm hết hàng. Vui lòng tham khảo bảng size hoặc chọn size khác!');
+    }
 }
 </script>
 

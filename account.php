@@ -156,6 +156,8 @@ function renderOrderCard(
     $payMethod = '<i class="ph ' . $pm['icon'] . '"></i> ' . $pm['label'];
 
     $payStatus = $order['payment_status'] ?? 'unpaid';
+    $isPaid = ($payStatus === 'paid');
+    
     $payBadge = [
         'unpaid'         => ['text' => 'Chưa thanh toán', 'color' => '#b91c1c', 'bg' => '#fef2f2', 'icon' => '<i class="ph ph-hourglass"></i>'],
         'pending'        => ['text' => 'Chờ thanh toán',  'color' => '#c2410c', 'bg' => '#fff7ed', 'icon' => '<i class="ph ph-clock"></i>'],
@@ -223,14 +225,14 @@ function renderOrderCard(
                     </span>
                 <?php endif; ?>
 
-                <!-- Badge trả hàng + mã đơn -->
+                <!-- Badge trả hàng + mã đơn (Bấm vào để xem chi tiết) -->
                 <?php if ($returnInfo):
                     $rInfo = $rMap[$returnInfo['status']] ?? ['Đang xử lý', '#57534e', '#f5f5f4', '<i class="ph ph-minus"></i>'];
                     $rCode = formatReturnCode($returnInfo);
                 ?>
-                    <span style="background:<?php echo $rInfo[2]; ?>;color:<?php echo $rInfo[1]; ?>;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600;font-family:'IBM Plex Mono',monospace;display:inline-flex;align-items:center;gap:4px;">
-                        <?php echo $rInfo[3]; ?> <?php echo sanitize($rCode); ?>
-                    </span>
+                    <a href="return.php?order_id=<?php echo (int)$order['id']; ?>" onclick="event.stopPropagation();" style="background:<?php echo $rInfo[2]; ?>;color:<?php echo $rInfo[1]; ?>;padding:4px 12px;border-radius:12px;font-size:12px;font-weight:600;font-family:'IBM Plex Mono',monospace;display:inline-flex;align-items:center;gap:4px;text-decoration:none;transition:0.2s;" onmouseover="this.style.opacity=0.8" onmouseout="this.style.opacity=1" title="Xem chi tiết đơn hoàn">
+                        <?php echo $rInfo[3]; ?> <?php echo sanitize($rCode); ?> <i class="ph ph-caret-right" style="font-size:10px;margin-left:2px;"></i>
+                    </a>
                 <?php endif; ?>
 
                 <!-- Nút thanh toán ngay -->
@@ -344,7 +346,12 @@ function renderOrderCard(
                     ], JSON_HEX_APOS | JSON_HEX_QUOT), ENT_QUOTES, 'UTF-8'); ?>' style="flex:1;background:#fff;color:#1c1b19;border:1px solid #1c1b19;padding:10px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;">
                         <i class="ph ph-pencil-simple"></i> Sửa đơn hàng
                     </button>
-                    <button type="button" class="btn-order-cancel" data-order-id="<?php echo (int)$order['id']; ?>" style="flex:1;background:#fff;color:#dc2626;border:1px solid #dc2626;padding:10px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;">
+                    <button type="button" class="btn-order-cancel" 
+                            data-order-id="<?php echo (int)$order['id']; ?>" 
+                            data-is-paid="<?php echo $isPaid ? '1' : '0'; ?>"
+                            data-pay-method="<?php echo htmlspecialchars($order['payment_method']); ?>"
+                            data-amount="<?php echo number_format($order['total_amount'], 0, ',', '.'); ?>"
+                            style="flex:1;background:#fff;color:#dc2626;border:1px solid #dc2626;padding:10px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;">
                         <i class="ph ph-x-circle"></i> Hủy đơn hàng
                     </button>
                 </div>
@@ -391,13 +398,21 @@ function renderOrderCard(
                                     <span style="background:<?php echo $rInfo[2]; ?>;color:<?php echo $rInfo[1]; ?>;padding:6px 14px;border-radius:12px;font-size:0.78rem;font-weight:700;white-space:nowrap;display:inline-flex;align-items:center;gap:5px;">
                                         <?php echo $rInfo[3]; ?> <?php echo $rInfo[0]; ?>
                                     </span>
-                                    <button type="button"
-                                            onclick="printReturnWaybill('<?php echo htmlspecialchars($rCode); ?>', 'SPX', '<?php echo htmlspecialchars(addslashes($order['full_name'])); ?>', '<?php echo htmlspecialchars(addslashes($order['phone'])); ?>', '<?php echo htmlspecialchars(addslashes($order['address'])); ?>', <?php echo (int)$order['id']; ?>)"
-                                            style="background:#fff; border:1px solid #d1d5db; color:#374151; padding: 6px 12px; border-radius: 6px; font-size: 0.75rem; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px; transition: all 0.2s;">
-                                        <i class="ph ph-printer"></i> In lại mã vận
-                                    </button>
+                                    
+                                    <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
+                                        <!-- NÚT XEM CHI TIẾT ĐƠN HOÀN MỚI THÊM -->
+                                        <a href="return.php?order_id=<?php echo (int)$order['id']; ?>" style="background:#fdf7f3; border:1px solid #fed7aa; color:#a8461f; padding: 6px 12px; border-radius: 6px; font-size: 0.75rem; font-weight: 600; text-decoration:none; display: flex; align-items: center; gap: 4px; transition: all 0.2s;">
+                                            <i class="ph ph-eye"></i> Xem chi tiết
+                                        </a>
+
+                                        <!-- NÚT IN LẠI MÃ VẬN ĐƠN (Chỉ hiện khi khách đã chọn gửi bưu điện, hoặc cứ để hiện nếu muốn) -->
+                                        <button type="button"
+                                                onclick="printReturnWaybill('<?php echo htmlspecialchars($rCode); ?>', 'SPX', '<?php echo htmlspecialchars(addslashes($order['full_name'])); ?>', '<?php echo htmlspecialchars(addslashes($order['phone'])); ?>', '<?php echo htmlspecialchars(addslashes($order['address'])); ?>', <?php echo (int)$order['id']; ?>)"
+                                                style="background:#fff; border:1px solid #d1d5db; color:#374151; padding: 6px 12px; border-radius: 6px; font-size: 0.75rem; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 4px; transition: all 0.2s;">
+                                            <i class="ph ph-printer"></i> In lại mã vận
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
                         </div>
                     <?php elseif ($canReturn): ?>
                         <div style="display:flex; gap:10px; margin-bottom:0.85rem;">
@@ -594,6 +609,9 @@ function renderOrderCard(
         margin-bottom: 12px;
         color: #d1d5db;
     }
+
+    /* Hiệu ứng xoay cho loading */
+    @keyframes spin { 100% { transform: rotate(360deg); } }
 </style>
 
 <main class="account-page-wrapper" style="padding: 40px 0; background-color: #f8f9fa;">
@@ -797,49 +815,65 @@ function renderOrderCard(
 
 <!-- ============ MODAL HỦY ĐƠN ============ -->
 <div class="modal-overlay" id="cancelOrderModal" aria-hidden="true">
-    <div class="modal-content" style="max-width:520px;padding:2rem;">
+    <div class="modal-content" style="max-width:520px;padding:2rem;position:relative;">
         <button type="button" class="modal-close" id="closeCancelModal" aria-label="Đóng"><i class="ph ph-x"></i></button>
-        <h2 class="modal-title" style="margin-bottom:0.5rem;color:#b91c1c;display:flex;align-items:center;gap:8px;">
-            <i class="ph ph-x-circle"></i> Hủy đơn hàng
-        </h2>
-        <p style="font-size:0.85rem;color:#6b7280;margin:0 0 1.25rem;">
-            Bạn chắc chắn muốn hủy đơn hàng này? Hành động này không thể hoàn tác.
-        </p>
+        
+        <!-- NỘI DUNG FORM HỦY (SẼ BỊ ẨN ĐI KHI THÀNH CÔNG) -->
+        <div id="cancelFormWrapper">
+            <h2 class="modal-title" style="margin-bottom:0.5rem;color:#b91c1c;display:flex;align-items:center;gap:8px;">
+                <i class="ph ph-x-circle"></i> Hủy đơn hàng
+            </h2>
+            <p style="font-size:0.85rem;color:#6b7280;margin:0 0 1.25rem;">
+                Bạn chắc chắn muốn hủy đơn hàng này? Hành động này không thể hoàn tác.
+            </p>
 
-        <form id="cancelOrderForm">
-            <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
-            <input type="hidden" name="action" value="cancel_order">
-            <input type="hidden" name="order_id" id="cancel_order_id" value="">
+            <form id="cancelOrderForm">
+                <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
+                <input type="hidden" name="action" value="cancel_order">
+                <input type="hidden" name="order_id" id="cancel_order_id" value="">
 
-            <div style="margin-bottom:14px;">
-                <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;">Lý do hủy đơn *</label>
-                <select name="cancel_reason" id="cancel_reason" required style="width:100%;padding:10px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;background:#fff;">
-                    <option value="">-- Chọn lý do --</option>
-                    <option value="Đổi ý, không muốn mua nữa">Đổi ý, không muốn mua nữa</option>
-                    <option value="Đặt nhầm sản phẩm / số lượng">Đặt nhầm sản phẩm / số lượng</option>
-                    <option value="Muốn thay đổi địa chỉ giao hàng">Muốn thay đổi địa chỉ giao hàng</option>
-                    <option value="Tìm được giá tốt hơn nơi khác">Tìm được giá tốt hơn nơi khác</option>
-                    <option value="Thời gian giao hàng quá lâu">Thời gian giao hàng quá lâu</option>
-                    <option value="Khác">Khác</option>
-                </select>
-            </div>
+                <div style="margin-bottom:14px;">
+                    <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;">Lý do hủy đơn *</label>
+                    <select name="cancel_reason" id="cancel_reason" required style="width:100%;padding:10px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;background:#fff;">
+                        <option value="">-- Chọn lý do --</option>
+                        <option value="Đổi ý, không muốn mua nữa">Đổi ý, không muốn mua nữa</option>
+                        <option value="Đặt nhầm sản phẩm / số lượng">Đặt nhầm sản phẩm / số lượng</option>
+                        <option value="Muốn thay đổi địa chỉ giao hàng">Muốn thay đổi địa chỉ giao hàng</option>
+                        <option value="Tìm được giá tốt hơn nơi khác">Tìm được giá tốt hơn nơi khác</option>
+                        <option value="Thời gian giao hàng quá lâu">Thời gian giao hàng quá lâu</option>
+                        <option value="Khác">Khác</option>
+                    </select>
+                </div>
 
-            <div id="otherReasonGroup" hidden style="margin-bottom:14px;">
-                <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;">Lý do cụ thể</label>
-                <textarea name="cancel_reason_other" id="cancel_reason_other" rows="2" maxlength="200" style="width:100%;padding:10px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;resize:vertical;" placeholder="Vui lòng ghi rõ lý do..."></textarea>
-            </div>
+                <div id="otherReasonGroup" hidden style="margin-bottom:14px;">
+                    <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;">Lý do cụ thể</label>
+                    <textarea name="cancel_reason_other" id="cancel_reason_other" rows="2" maxlength="200" style="width:100%;padding:10px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:14px;resize:vertical;" placeholder="Vui lòng ghi rõ lý do..."></textarea>
+                </div>
 
-            <p id="cancelErrorMsg" style="color:#b91c1c;font-size:13px;margin:8px 0 0;min-height:1em;"></p>
+                <p id="cancelErrorMsg" style="color:#b91c1c;font-size:13px;margin:8px 0 0;min-height:1em;"></p>
 
-            <div style="display:flex;gap:10px;margin-top:16px;">
-                <button type="button" id="cancelKeepBtn" style="flex:1;padding:11px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;font-weight:600;cursor:pointer;">
-                    Giữ đơn
-                </button>
-                <button type="submit" style="flex:2;padding:11px;background:#dc2626;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;">
-                    <i class="ph ph-x-circle"></i> Xác nhận hủy
-                </button>
-            </div>
-        </form>
+                <div style="display:flex;gap:10px;margin-top:16px;">
+                    <button type="button" id="cancelKeepBtn" style="flex:1;padding:11px;background:#fff;color:#374151;border:1px solid #d1d5db;border-radius:8px;font-weight:600;cursor:pointer;">
+                        Giữ đơn
+                    </button>
+                    <button type="submit" id="cancelSubmitBtn" style="flex:2;padding:11px;background:#dc2626;color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;">
+                        <i class="ph ph-x-circle"></i> Xác nhận hủy
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- TRẠNG THÁI THÀNH CÔNG (HIỂN THỊ SAU KHI XỬ LÝ XONG) -->
+        <div id="cancelSuccessState" style="display: none; text-align: center; padding: 1rem 0;">
+            <i class="ph-fill ph-check-circle" style="font-size: 4.5rem; color: #166534; margin-bottom: 1rem;"></i>
+            <h2 style="color: #166534; font-size: 1.4rem; margin-bottom: 0.5rem;">Hủy đơn thành công!</h2>
+            <p id="cancelSuccessMsg" style="color: #4b5563; font-size: 0.95rem; line-height: 1.6; margin-bottom: 2rem;">
+                <!-- Nội dung sẽ được chèn bằng JS -->
+            </p>
+            <button type="button" onclick="location.reload()" style="width: 100%; padding: 12px; background: #166534; color: #fff; border: none; border-radius: 8px; font-weight: 700; font-size: 1rem; cursor: pointer; transition: 0.2s;">
+                Đóng & Tải lại trang
+            </button>
+        </div>
     </div>
 </div>
 
@@ -1213,14 +1247,40 @@ function closeReturnWaybill() {
     var cancelErr   = document.getElementById('cancelErrorMsg');
     var reasonSel   = document.getElementById('cancel_reason');
     var otherGroup  = document.getElementById('otherReasonGroup');
+    
+    // Các element dùng cho luồng Hoàn tiền
+    var cancelFormWrapper = document.getElementById('cancelFormWrapper');
+    var cancelSuccessState = document.getElementById('cancelSuccessState');
+    var cancelSuccessMsg = document.getElementById('cancelSuccessMsg');
+    var cancelSubmitBtn = document.getElementById('cancelSubmitBtn');
+    
+    // Biến lưu trạng thái thanh toán của đơn đang hủy
+    var currentIsPaid = false;
+    var currentPayMethod = '';
+    var currentAmount = '';
 
     document.body.addEventListener('click', function (e) {
         var btn = e.target.closest('.btn-order-cancel');
         if (!btn) return;
+        
+        // Reset form và trạng thái UI
         cancelForm.reset();
+        cancelFormWrapper.style.display = 'block';
+        cancelSuccessState.style.display = 'none';
+        
         document.getElementById('cancel_order_id').value = btn.dataset.orderId;
+        
+        // Lưu lại thông tin thanh toán để dùng khi submit
+        currentIsPaid = btn.dataset.isPaid === '1';
+        currentPayMethod = btn.dataset.payMethod || 'cod';
+        currentAmount = btn.dataset.amount || '0';
+        
         otherGroup.hidden = true;
         cancelErr.textContent = '';
+        
+        cancelSubmitBtn.disabled = false;
+        cancelSubmitBtn.innerHTML = '<i class="ph ph-x-circle"></i> Xác nhận hủy';
+        
         cancelModal.classList.add('show');
         document.body.style.overflow = 'hidden';
     });
@@ -1251,28 +1311,44 @@ function closeReturnWaybill() {
 
         if (!confirm('Bạn chắc chắn muốn hủy đơn hàng này?\nHành động này không thể hoàn tác.')) return;
 
-        var btn = cancelForm.querySelector('button[type="submit"]');
-        var old = btn.innerHTML;
-        btn.disabled = true;
-        btn.textContent = 'Đang xử lý...';
+        var old = cancelSubmitBtn.innerHTML;
+        cancelSubmitBtn.disabled = true;
+        cancelSubmitBtn.innerHTML = '<i class="ph ph-spinner-gap" style="animation: spin 1s linear infinite; font-size: 1.1rem;"></i> Đang xử lý hoàn tiền...';
+        cancelErr.textContent = '';
 
         fetch('ajax/order_actions.php', { method: 'POST', body: new FormData(cancelForm) })
         .then(function (r) { return r.json(); })
         .then(function (data) {
             if (data.ok) {
-                closeCancel();
-                showToast(data.msg || 'Hủy đơn hàng thành công!', false);
-                setTimeout(function () { location.reload(); }, 1800);
+                if (currentIsPaid) {
+                    // XOAY 3 GIÂY TRƯỚC KHI HIỆN THÔNG BÁO THÀNH CÔNG
+                    setTimeout(function () {
+                        cancelFormWrapper.style.display = 'none';
+                        cancelSuccessState.style.display = 'block';
+                        
+                        // Xác định nơi hoàn tiền
+                        var destination = 'Ví Atelier Pay';
+                        if (currentPayMethod === 'bank') destination = 'tài khoản ngân hàng đã liên kết';
+                        else if (currentPayMethod === 'card') destination = 'thẻ thanh toán';
+                        
+                        cancelSuccessMsg.innerHTML = `Quý khách đã hủy đơn hàng thành công.<br>Số tiền <b>${currentAmount}đ</b> sẽ được hoàn về <b>${destination}</b> trong thời gian sớm nhất.`;
+                    }, 3000); // Chờ 3 giây
+                } else {
+                    // Đơn chưa thanh toán (COD) -> Hủy luôn
+                    closeCancel();
+                    showToast(data.msg || 'Hủy đơn hàng thành công!', false);
+                    setTimeout(function () { location.reload(); }, 1800);
+                }
             } else {
                 cancelErr.textContent = data.msg || 'Có lỗi xảy ra.';
-                btn.disabled = false;
-                btn.innerHTML = old;
+                cancelSubmitBtn.disabled = false;
+                cancelSubmitBtn.innerHTML = old;
             }
         })
         .catch(function () {
             cancelErr.textContent = 'Không thể kết nối tới máy chủ.';
-            btn.disabled = false;
-            btn.innerHTML = old;
+            cancelSubmitBtn.disabled = false;
+            cancelSubmitBtn.innerHTML = old;
         });
     });
 

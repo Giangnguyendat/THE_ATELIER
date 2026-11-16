@@ -239,62 +239,100 @@ $payMethods = [
     .cancel-step { display: none; }
     .cancel-step.active { display: block; animation: admFadeIn 0.25s ease; }
 
-    /* ============ Waybill ============ */
+        /* ============ Waybill SPX Style ============ */
     .waybill-wrap { 
-        background: #fff; padding: 15px; border: 1px solid #ccc; 
-        margin-top: 20px; display: none; max-width: 500px; 
+        background: #fff; padding: 15px; border: 1px dashed #2563eb; 
+        margin-top: 20px; display: none; max-width: 480px; /* Thu nhỏ lại cho giống tem thực tế */
         box-sizing: border-box; 
     }
     .waybill-wrap.show { display: block; }
+    
     .wb-label { 
-        border: 2px solid #000; padding: 15px; font-family: Arial, Helvetica, sans-serif; 
+        border: 2px solid #000; padding: 10px; font-family: Arial, Helvetica, sans-serif; 
         color: #000; background: #fff; position: relative; 
-        width: 100%; box-sizing: border-box; 
+        width: 100%; box-sizing: border-box; font-size: 11px;
     }
-        /* Header: Logo & Barcode */
-    .wb-header { 
-        display: flex; justify-content: space-between; align-items: center; /* Căn giữa theo chiều dọc */
-        border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 10px; 
-        flex-wrap: nowrap; /* Không cho rớt dòng */
+
+    /* Header */
+    .wb-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+    .wb-logo-area { display: flex; flex-direction: column; align-items: flex-start; }
+    .shopee-logo { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+    .shopee-bag { width: 24px; height: 24px; background: #ee4d2d; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 14px; }
+    .shopee-text { color: #ee4d2d; font-size: 20px; font-weight: bold; letter-spacing: -0.5px; }
+    .spx-logo-text { color: #ee4d2d; font-size: 32px; font-weight: 900; line-height: 0.9; font-style: italic; letter-spacing: -1px; }
+    .spx-express-text { color: #ee4d2d; font-size: 9px; font-weight: bold; letter-spacing: 3px; margin-left: 2px; }
+
+    .wb-barcode-area { text-align: right; display: flex; flex-direction: column; align-items: flex-end; width: 200px; }
+    .wb-barcode-area img { height: 45px !important; width: 100% !important; object-fit: fill; }
+    .wb-tracking-text { font-size: 12px; margin-top: 4px; font-family: monospace; }
+    .wb-tracking-text span { font-weight: bold; }
+
+    /* Divider */
+    .wb-dashed { border-top: 1px dashed #000; margin: 8px 0; width: 100%; }
+
+    /* Addresses */
+    .wb-addresses { display: flex; gap: 8px; }
+    .wb-col-left { flex: 1; border-right: 1px dashed #000; padding-right: 8px; }
+    .wb-col-right { flex: 1.2; }
+    .wb-addr-title { font-weight: bold; font-size: 11px; margin-bottom: 2px; }
+    .wb-addr-content { font-size: 11px; line-height: 1.35; word-break: break-word; }
+    .wb-addr-content b { font-size: 11.5px; }
+
+    /* Sorting */
+    .wb-sorting { 
+        display: flex; 
+        border-top: 1px dashed #000; 
+        border-bottom: 1px dashed #000; 
+        padding: 4px 0; /* Giảm padding để ô thấp lại */
+        align-items: center; 
+        justify-content: space-between;
     }
-    .wb-logo { 
-        font-size: 28px; font-weight: 900; color: #ee4d2d; 
-        text-transform: uppercase; line-height: 1; flex-shrink: 0; margin-right: 10px;
-    }
-.wb-barcode { 
-    text-align: right; display: flex; flex-direction: column; align-items: flex-end; 
-    flex: 0 0 auto; /* không giãn ra chiếm hết chỗ */
-    max-width: 200px;
-}
-.wb-barcode img { 
-    height: 36px !important; 
-    width: 160px !important; 
-    max-width: 100%; 
-    object-fit: fill; /* ép đúng kích thước, không để ảnh gốc phình ra */
-    image-rendering: crisp-edges; 
-}
-.wb-tracking-no { 
-    font-size: 12px; font-weight: bold; margin-top: 3px; letter-spacing: 0.5px; 
-}
-    .wb-cols { 
-        display: flex; border-bottom: 1px dashed #000; padding-bottom: 10px; margin-bottom: 10px; gap: 10px; 
-    }
-    .wb-col { flex: 1; font-size: 12px; line-height: 1.4; word-break: break-word; }
-    .wb-col:first-child { border-right: 1px dashed #000; padding-right: 10px; }
     .wb-sort-code { 
-        text-align: center; font-size: 22px; font-weight: bold; 
-        border-bottom: 1px solid #000; padding: 8px 0; margin-bottom: 10px; letter-spacing: 2px; 
+        flex: 1.2; /* Cho phần mã phân loại rộng hơn một chút */
+        font-size: 15px; /* Thu nhỏ chữ */
+        font-weight: bold; 
+        font-family: monospace; 
+        letter-spacing: 0.5px; 
+        padding-left: 8px;
+        white-space: nowrap; /* Ép buộc không được rớt dòng */
     }
-    .wb-body { 
-        display: flex; border-bottom: 1px dashed #000; padding-bottom: 10px; margin-bottom: 10px; gap: 10px; 
+    .wb-sort-dest { 
+        flex: 1; 
+        font-size: 14px; /* Thu nhỏ chữ */
+        font-weight: bold; 
+        text-align: center; 
+        border-left: 1px dashed #000; 
+        text-transform: uppercase;
+        white-space: nowrap; /* Ép buộc không được rớt dòng */
+        overflow: hidden; 
+        text-overflow: ellipsis; /* Nếu tên tỉnh thành quá dài sẽ hiện dấu ... */
     }
-    .wb-items { flex: 1; font-size: 12px; line-height: 1.4; padding-right: 10px; border-right: 1px dashed #000; }
-    .wb-qr { width: 110px; text-align: center; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-    .wb-qr img { width: 100px; height: 100px; object-fit: contain; }
-    .wb-qr-code { font-size: 11px; font-weight: bold; margin-top: 4px; word-break: break-all; }
-    .wb-footer { display: flex; justify-content: space-between; align-items: flex-end; }
-    .wb-cod { font-size: 20px; font-weight: bold; margin-top: 2px; }
-    .wb-sign { border: 1px solid #000; padding: 5px 10px; font-size: 10px; text-align: center; min-width: 120px; }
+    /* Content & QR */
+    .wb-body { display: flex; padding: 8px 0; }
+    .wb-items { flex: 1; font-size: 11px; line-height: 1.4; padding-right: 8px; border-right: 1px dashed #000;display: flex;flex-direction: column; }
+    .wb-items b { font-size: 11px; }
+    .wb-qr-area { width: 130px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding-left: 8px; }
+    .wb-qr-area img { width: 90px; height: 90px; object-fit: contain; }
+    .wb-qr-sub { font-size: 14px; font-weight: bold; margin-top: 4px; font-family: monospace; }
+    .wb-date-text { font-size: 11px; font-weight: bold; margin-top: 4px; text-align: center; }
+
+    /* Footer */
+    .wb-footer { display: flex; border-top: 1px dashed #000; padding-top: 8px; }
+    .wb-footer-left { flex: 1.2; border-right: 1px dashed #000; padding-right: 8px; }
+    .wb-cod-title { font-size: 11px; }
+    .wb-cod-amount { font-size: 22px; font-weight: bold; margin: 4px 0; font-family: Arial, sans-serif; }
+    .wb-weight { font-size: 11px; text-align: right; font-weight: bold; margin-top: 4px; }
+    .wb-footer-right { flex: 0.8; padding-left: 8px; display: flex; align-items: center; justify-content: center; }
+    .wb-sign-box { border: 1px solid #000; padding: 8px; text-align: center; font-size: 10px; width: 100%; height: 70px; display: flex; flex-direction: column; justify-content: space-between; }
+    .wb-sign-title { font-weight: bold; font-size: 11px; }
+
+    /* Instructions */
+    .wb-instructions { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 8px; font-size: 10px; }
+    .wb-guide-text { font-weight: bold; font-size: 11px; }
+    .wb-return-text { text-align: right; font-size: 9px; line-height: 1.2; }
+
+    /* Hotline */
+    .wb-hotline { text-align: center; color: #ee4d2d; font-weight: bold; font-size: 11px; margin-top: 8px; border-top: 1px solid #000; padding-top: 6px; }
 
     @media print {
         body * { visibility: hidden; }
@@ -370,6 +408,7 @@ $payMethods = [
                     </span>
                 </div>
             </div>
+
             <?php if ($orderType === 'exchange'):
                 $itemsTotal = 0;
                 foreach ($items as $it) $itemsTotal += ($it['price'] ?? 0) * ($it['quantity'] ?? 1);
@@ -708,7 +747,7 @@ $payMethods = [
                     <i class="ph ph-truck" style="color:#1d4ed8;"></i> Tạo vận đơn
                 </h2>
 
-                <form id="shippingForm" onsubmit="generateWaybill(event)">
+                <form id="shippingForm">
 
                     <div class="form-group">
                         <label>Địa chỉ lấy hàng (Shop) *</label>
@@ -719,10 +758,10 @@ $payMethods = [
                         <label>Đơn vị vận chuyển *</label>
                         <select id="courierSelect" class="form-control" required onchange="updateShippingFee()">
                             <option value="">-- Chọn đơn vị --</option>
-                            <option value="SPX" data-fee="22000">Shopee Express (SPX) - 22.000đ</option>
-                            <option value="GHN" data-fee="24000">Giao Hàng Nhanh (GHN) - 24.000đ</option>
-                            <option value="VIETTEL" data-fee="20000">Viettel Post - 20.000đ</option>
-                            <option value="GHTK" data-fee="21000">Giao Hàng Tiết Kiệm (GHTK) - 21.000đ</option>
+                            <option value="SPX" data-fee="22000">Shopee Express (SPX)</option>
+                            <option value="GHN" data-fee="24000">Giao Hàng Nhanh (GHN)</option>
+                            <option value="VIETTEL" data-fee="20000">Viettel Post</option>
+                            <option value="GHTK" data-fee="21000">Giao Hàng Tiết Kiệm (GHTK)</option>
                         </select>
                     </div>
 
@@ -741,16 +780,34 @@ $payMethods = [
 
                     <div class="form-group">
                         <label>Khối lượng (gram)</label>
-                        <input type="number" id="weightInput" class="form-control" value="500" min="100" step="100" required>
+                        <input type="number" id="weightInput" class="form-control" value="500" min="100" step="100" required oninput="updateShippingFee()">
                     </div>
 
-                    <button type="submit" class="btn-adm btn-adm--primary" style="width:100%; justify-content:center; padding:12px; font-size:0.95rem; margin-top:10px; display:inline-flex; align-items:center; gap:6px;">
-                        <i class="ph ph-ticket"></i> Tạo mã vận đơn
-                    </button>
+                    <!-- BƯỚC 1: NÚT GỬI THÔNG TIN -->
+                    <div id="step1Actions" style="margin-top:10px;">
+                        <button type="button" id="sendInfoBtn" class="btn-adm btn-adm--primary" style="width:100%; justify-content:center; padding:12px; font-size:0.95rem; display:inline-flex; align-items:center; gap:6px;" onclick="sendShippingInfo()">
+                            <i class="ph ph-paper-plane-tilt"></i> Gửi thông tin vận chuyển
+                        </button>
+                    </div>
+
+                    <!-- BƯỚC 2: SAU KHI GỬI THÔNG TIN THÀNH CÔNG -->
+                    <div id="step2Actions" style="display:none; flex-direction:column; gap:10px; margin-top:10px;">
+                        <div style="background:#ecfdf5; border:1px solid #bbf7d0; color:#166534; padding:10px; border-radius:6px; font-size:0.85rem; display:flex; align-items:center; gap:6px; font-weight:600;">
+                            <i class="ph-fill ph-check-circle" style="font-size:1.1rem;"></i>
+                            Gửi thông tin vận chuyển thành công!
+                        </div>
+                        <button type="button" id="genWaybillBtn" class="btn-adm" style="width:100%; justify-content:center; padding:12px; font-size:0.95rem; display:inline-flex; align-items:center; gap:6px; background:#2563eb; color:#fff; border:none; border-radius:8px; font-weight:700; cursor:pointer; box-shadow:0 2px 8px rgba(37,99,235,0.25);" onclick="generateWaybill(event)">
+                            <i class="ph ph-ticket"></i> Tạo mã vận đơn
+                        </button>
+                        <button type="button" id="editInfoBtn" class="btn-adm" style="width:100%; justify-content:center; padding:12px; font-size:0.95rem; display:inline-flex; align-items:center; gap:6px; background:#f3f4f6; color:#374151; border:none; border-radius:8px; font-weight:700; cursor:pointer;" onclick="editShippingInfo()">
+                            <i class="ph ph-pencil-simple"></i> Sửa thông tin
+                        </button>
+                    </div>
                 </form>
             </div>
 
             <!-- TEM VẬN ĐƠN IN ĐƯỢC -->
+                        <!-- TEM VẬN ĐƠN IN ĐƯỢC -->
             <div class="waybill-wrap" id="waybillWrap">
                 <div style="margin-bottom:10px; display:flex; justify-content:space-between; align-items:center;" class="no-print">
                     <span style="color:#166534; font-weight:700; font-size:0.85rem; display:inline-flex; align-items:center; gap:6px;">
@@ -763,72 +820,102 @@ $payMethods = [
 
                 <div class="wb-label" id="printArea">
                     <!-- Header -->
-                                        <div class="wb-header">
-                        <div class="wb-logo" id="wbLogo">SPX</div>
-                        <div class="wb-barcode">
+                    <div class="wb-header">
+                        <div class="wb-logo-area">
+    <div style="display:flex; flex-direction:column; align-items:flex-start;">
+        <div style="display:flex; align-items:center; gap:4px; margin-bottom:4px;">
+            <div id="wbCourierIcon" style="width:24px; height:24px; background:#ee4d2d; border-radius:4px; display:flex; align-items:center; justify-content:center; color:white; font-weight:bold; font-size:14px;">S</div>
+            <div id="wbCourierName" style="color:#ee4d2d; font-size:20px; font-weight:bold; letter-spacing:-0.5px;">Shopee</div>
+        </div>
+        <div id="wbCourierMain" style="color:#ee4d2d; font-size:32px; font-weight:900; line-height:0.9; font-style:italic; letter-spacing:-1px;">SPX</div>
+        <div id="wbCourierSub" style="color:#ee4d2d; font-size:9px; font-weight:bold; letter-spacing:3px; margin-left:2px;">EXPRESS</div>
+    </div>
+</div>
+                        <div class="wb-barcode-area">
                             <img id="wbBarcodeImg" src="" alt="Barcode">
-                            <div class="wb-tracking-no" id="wbTrackingNo">SPXVN000000000</div>
-                            <div style="font-size:10px; color:#555; margin-top:2px;">Mã đơn hàng: #<?php echo $orderId; ?></div>
+                            <div class="wb-tracking-text">Mã vận đơn: <span id="wbTrackingNo">SPXVN000000000</span></div>
+                            <div class="wb-tracking-text" style="margin-top:2px;">Mã đơn hàng: <span><?php echo $order['order_code'] ?? $orderId; ?></span></div>
                         </div>
                     </div>
 
-                    <!-- Info Columns -->
-                    <div class="wb-cols">
-                        <div class="wb-col">
-                            <div style="font-size:10px; color:#555; margin-bottom:2px;">TỪ:</div>
-                            <b>THE ATELIER STORE</b><br>
-                            <span id="wbPickupAddress"><?php echo htmlspecialchars($shopAddress); ?></span><br>
-                            <b>SĐT:</b> 1900 123 456
-                        </div>
-                        <div class="wb-col">
-                            <div style="font-size:10px; color:#555; margin-bottom:2px;">ĐẾN:</div>
-                            <b><?php echo htmlspecialchars($order['full_name']); ?></b><br>
-                            <?php echo htmlspecialchars($order['phone']); ?><br>
-                            <?php echo htmlspecialchars($order['address']); ?>
-                        </div>
-                    </div>
+                    <div class="wb-dashed"></div>
 
-                    <!-- Sorting Code -->
-                    <div class="wb-sort-code" id="wbSortCode">SE1-63-19-TU06</div>
-
-                    <!-- Body -->
-                    <div class="wb-body">
-                        <div class="wb-items">
-                            <b>Nội dung (Tổng SL: <?php echo array_sum(array_column($items, 'quantity')); ?>)</b><br>
-                            <?php 
-                            $itemNames = [];
-                            foreach ($items as $it) {
-                                $itemNames[] = ($it['name'] ?? 'SP') . ' (SL: ' . ($it['quantity'] ?? 1) . ')';
-                            }
-                            echo implode(', ', $itemNames);
-                            ?>
-                            <div style="margin-top:8px; font-size:10px; font-style:italic; color:#555;">
-                                Người gửi chịu trách nhiệm về hàng hóa. Bưu gửi không được chứa hàng cấm, hàng dễ cháy nổ. Được mở kiểm tra khi nhận hàng.
+                    <!-- Addresses -->
+                    <div class="wb-addresses">
+                        <div class="wb-col-left">
+                            <div class="wb-addr-title">Từ:</div>
+                            <div class="wb-addr-content">
+                                <b>THE ATELIER STORE</b><br>
+                                <span id="wbPickupAddress"><?php echo htmlspecialchars($shopAddress); ?></span><br>
+                                <b>SĐT:</b> 1900 123 456
                             </div>
                         </div>
-                        <div class="wb-qr">
+                        <div class="wb-col-right">
+                            <div class="wb-addr-title">Đến: <?php echo !empty($order['note']) ? '(Ghi chú: ' . htmlspecialchars($order['note']) . ')' : '(Không có ghi chú)'; ?></div>
+                            <div class="wb-addr-content">
+                                <b><?php echo htmlspecialchars($order['full_name']); ?></b><br>
+                                <span id="wbReceiverAddress"><?php echo htmlspecialchars($order['address']); ?></span><br>
+                                <b>SĐT:</b> <?php echo htmlspecialchars($order['phone']); ?>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Sorting -->
+                    <div class="wb-sorting">
+                        <div class="wb-sort-code" id="wbSortCode">SE1-63-04-TU01</div>
+                        <div class="wb-sort-dest">TÂN TRUNG</div>
+                    </div>
+
+                    <!-- Body (Items & QR) -->
+                    <div class="wb-body">
+                        <div class="wb-items">
+                            <div>
+                                <b>Nội dung hàng (Tổng SL sản phẩm: <?php echo array_sum(array_column($items, 'quantity')); ?>)</b><br>
+                                <span id="wbItemList">
+                                <?php 
+                                $itemNames = [];
+                                foreach ($items as $it) {
+                                    $itemNames[] = ($it['name'] ?? 'SP') . ' (SL: ' . ($it['quantity'] ?? 1) . ')';
+                                }
+                                echo implode(', ', $itemNames);
+                                ?>
+                                </span>
+                            </div>
+                            
+                            <!-- ĐOẠN CHỮ ĐƯỢC ĐƯA VÀO ĐÂY VÀ THÊM margin-top: auto -->
+                            <div style="margin-top: auto; padding-top: 10px; font-size: 9px; font-style: italic; color:#333; line-height: 1.3;">
+                                Người gửi phải cam kết hàng hóa có đầy đủ chách hóa đơn, chứng từ, giấy phép cần thiết theo quy định của pháp luật và chịu trách nhiệm trước pháp luật về nội dung hàng hóa này (Lưu ý: Một số sản phẩm có thể bị ẩn do danh sách quá dài).
+                            </div>
+                        </div>
+                        <div class="wb-qr-area">
                             <img id="wbQrImg" src="" alt="QR">
-                            <div class="wb-qr-code" id="wbQrCode">HCA-50-07-Q74</div>
-                            <div style="font-size:10px; margin-top:4px;">Ngày: <?php echo date('d-m-Y'); ?></div>
+                            <div class="wb-qr-sub" id="wbQrCode">HCA-50-07-Q746R</div>
+                            <div class="wb-date-text" id="wbDateText">18-05-2025<br>13:47</div>
                         </div>
                     </div>
 
                     <!-- Footer -->
                     <div class="wb-footer">
-                        <div>
-                            <div style="font-size:11px; color:#555;">Tiền thu hộ (COD):</div>
-                            <div class="wb-cod" id="wbCodAmount">0 VND</div>
-                            <div style="font-size:11px; margin-top:6px;">KL: <span id="wbWeightDisplay">500g</span></div>
+                        <div class="wb-footer-left">
+                            <div class="wb-cod-title">Tiền thu Người nhận:</div>
+                            <div class="wb-cod-amount" id="wbCodAmount">0 VND</div>
+                            <div class="wb-weight">Khối lượng tối đa: <span id="wbWeightDisplay">5,000 g</span></div>
                         </div>
-                        <div class="wb-sign">
-                            <div style="margin-bottom:25px;">Chữ ký người nhận</div>
-                            <div style="font-size:8px; color:#555;">(Xác nhận hàng nguyên vẹn)</div>
+                        <div class="wb-footer-right">
+                            <div class="wb-sign-box">
+                                <div class="wb-sign-title">Chữ ký người nhận</div>
+                                <div style="font-size:9px;">Xác nhận hàng nguyên vẹn, không móp/méo, bể/vỡ</div>
+                                <div></div>
+                            </div>
                         </div>
                     </div>
-                    
-                    <div style="text-align:center; font-size:10px; margin-top:12px; color:#d32f2f; font-weight:bold;">
-                        LƯU Ý: Quay video khi mở hộp để được bảo vệ quyền lợi.
+
+                    <!-- Instructions -->
+                    <div class="wb-instructions">
+                        <div class="wb-guide-text">Chỉ dẫn giao hàng: <span style="text-decoration: underline;">Được đồng kiểm</span></div>
+                        <div class="wb-return-text">Chuyển hoàn sau 3 lần phát; Lưu kho tối đa 5 ngày</div>
                     </div>
+
                 </div>
             </div>
         <?php endif; ?>
@@ -958,10 +1045,22 @@ document.addEventListener('DOMContentLoaded', function() {
 // ==========================================
 function updateShippingFee() {
     var courierSelect = document.getElementById('courierSelect');
-    if (!courierSelect) return;
+    var weightInput = document.getElementById('weightInput');
+    if (!courierSelect || !weightInput) return;
 
     var selectedOption = courierSelect.options[courierSelect.selectedIndex];
-    var fee = parseInt(selectedOption.getAttribute('data-fee')) || 0;
+    var baseFee = parseInt(selectedOption.getAttribute('data-fee')) || 0;
+    var weight = parseInt(weightInput.value) || 0;
+    
+    // Logic tính phí theo cân nặng
+    var extraFee = 0;
+    if (weight > 10000) {
+        extraFee = 50000;
+    } else if (weight > 5000) {
+        extraFee = 20000;
+    }
+    var totalFee = baseFee + extraFee;
+
     var display = document.getElementById('shippingFeeDisplay');
 
     if (courierSelect.value === "") {
@@ -975,64 +1074,172 @@ function updateShippingFee() {
         return;
     }
 
-    var payer = document.querySelector('input[name="ship_payer"]:checked').value;
+    var payerEl = document.querySelector('input[name="ship_payer"]:checked');
+    var payer = payerEl ? payerEl.value : 'buyer';
 
     if (payer === 'seller') {
-        display.textContent = 'Shop trả (' + fee.toLocaleString('vi-VN') + 'đ)';
+        display.textContent = 'Shop trả (' + totalFee.toLocaleString('vi-VN') + 'đ)';
         display.style.color = '#166534';
     } else {
-        display.textContent = fee.toLocaleString('vi-VN') + 'đ';
+        display.textContent = totalFee.toLocaleString('vi-VN') + 'đ';
         display.style.color = '#a8461f';
     }
 }
 
 // ==========================================
-// HÀM TẠO MÃ VẬN ĐƠN
+// HÀM GỬI THÔNG TIN VẬN CHUYỂN (BƯỚC 1)
 // ==========================================
-function generateWaybill(e) {
-    e.preventDefault();
-
+function sendShippingInfo() {
     var courier = document.getElementById('courierSelect').value;
     var weight = document.getElementById('weightInput').value;
-    var pickupAddress = document.getElementById('pickupAddress').value;
-    var payer = document.querySelector('input[name="ship_payer"]:checked').value;
+    var pickupAddress = document.getElementById('pickupAddress').value.trim();
 
+    if (!pickupAddress) {
+        alert('Vui lòng nhập địa chỉ lấy hàng!');
+        return;
+    }
     if (!courier) {
         alert('Vui lòng chọn đơn vị vận chuyển!');
         return;
     }
+    if (!weight || weight < 100) {
+        alert('Khối lượng không hợp lệ (tối thiểu 100g)!');
+        return;
+    }
+
+    // Khóa form lại để tránh sửa nhầm
+    var inputs = document.querySelectorAll('#shippingForm input, #shippingForm select, #shippingForm textarea');
+    inputs.forEach(function(el) {
+        el.disabled = true;
+    });
+    
+    // Chuyển sang hiển thị nút xác nhận
+    document.getElementById('step1Actions').style.display = 'none';
+    document.getElementById('step2Actions').style.display = 'flex';
+}
+
+// ==========================================
+// HÀM SỬA THÔNG TIN VẬN CHUYỂN
+// ==========================================
+function editShippingInfo() {
+    // Mở khóa form
+    var inputs = document.querySelectorAll('#shippingForm input, #shippingForm select, #shippingForm textarea');
+    inputs.forEach(function(el) {
+        el.disabled = false;
+    });
+
+    // Giữ nguyên logic nếu đơn được miễn phí ship
+    if (isFreeShip) {
+        var buyerRadio = document.getElementById('payerBuyer');
+        var sellerRadio = document.getElementById('payerSeller');
+        if (buyerRadio && sellerRadio) {
+            buyerRadio.disabled = true;
+            sellerRadio.checked = true;
+        }
+    }
+
+    // Quay lại nút gửi thông tin
+    document.getElementById('step1Actions').style.display = 'block';
+    document.getElementById('step2Actions').style.display = 'none';
+}
+
+function generateWaybill(e) {
+    if (e) e.preventDefault();
+
+    var courier = document.getElementById('courierSelect').value;
+    var weight = parseInt(document.getElementById('weightInput').value) || 0;
+    var pickupAddress = document.getElementById('pickupAddress').value;
+    
+    var payerEl = document.querySelector('input[name="ship_payer"]:checked');
+    var payer = payerEl ? payerEl.value : 'buyer';
 
     var courierSelect = document.getElementById('courierSelect');
     var baseFee = parseInt(courierSelect.options[courierSelect.selectedIndex].getAttribute('data-fee')) || 0;
 
-    var prefix = courier === 'SPX' ? 'SPXVN' : (courier === 'GHN' ? 'GHN' : (courier === 'VIETTEL' ? 'VTP' : 'GHTK'));
-    var trackingNo = prefix + Math.floor(100000000000 + Math.random() * 900000000000);
+    // Tính lại tổng phí (bao gồm phụ phí cân nặng) để in lên vận đơn
+    var extraFee = 0;
+    if (weight > 10000) {
+        extraFee = 50000;
+    } else if (weight > 5000) {
+        extraFee = 20000;
+    }
+    var totalFee = baseFee + extraFee;
 
-    document.getElementById('wbLogo').textContent = courier;
-    document.getElementById('wbLogo').style.color = courier === 'SPX' ? '#ee4d2d' : (courier === 'GHN' ? '#0055aa' : '#000');
+    var prefix = courier === 'SPX' ? 'SPXVN' : (courier === 'GHN' ? 'GHN' : (courier === 'VIETTEL' ? 'VTP' : 'GHTK'));
+        var trackingNo = prefix + Math.floor(100000000000 + Math.random() * 900000000000);
+
+    // === BẮT ĐẦU THÊM ĐOẠN NÀY VÀO ĐỂ ĐỔI LOGO THEO HÃNG ===
+    var logoIcon = document.getElementById('wbCourierIcon');
+    var logoName = document.getElementById('wbCourierName');
+    var logoMain = document.getElementById('wbCourierMain');
+    var logoSub = document.getElementById('wbCourierSub');
+
+    if (courier === 'SPX') {
+        logoName.textContent = 'Shopee'; logoName.style.color = '#ee4d2d';
+        logoMain.textContent = 'SPX'; logoMain.style.color = '#ee4d2d';
+        logoSub.textContent = 'EXPRESS'; logoSub.style.color = '#ee4d2d';
+        logoIcon.textContent = 'S'; logoIcon.style.background = '#ee4d2d';
+    } else if (courier === 'GHN') {
+        logoName.textContent = 'Giao Hàng'; logoName.style.color = '#0055aa';
+        logoMain.textContent = 'GHN'; logoMain.style.color = '#0055aa';
+        logoSub.textContent = 'NHANH'; logoSub.style.color = '#0055aa';
+        logoIcon.textContent = 'G'; logoIcon.style.background = '#0055aa';
+    } else if (courier === 'VIETTEL') {
+        logoName.textContent = 'Viettel'; logoName.style.color = '#d32f2f';
+        logoMain.textContent = 'VTP'; logoMain.style.color = '#d32f2f';
+        logoSub.textContent = 'POST'; logoSub.style.color = '#d32f2f';
+        logoIcon.textContent = 'V'; logoIcon.style.background = '#d32f2f';
+    } else if (courier === 'GHTK') {
+        logoName.textContent = 'Giao Hàng'; logoName.style.color = '#008844';
+        logoMain.textContent = 'GHTK'; logoMain.style.color = '#008844';
+        logoSub.textContent = 'TIẾT KIỆM'; logoSub.style.color = '#008844';
+        logoIcon.textContent = 'G'; logoIcon.style.background = '#008844';
+    }
+    // === KẾT THÚC ĐOẠN THÊM ===
+
+    // Cập nhật Barcode và Mã vận đơn
     document.getElementById('wbTrackingNo').textContent = trackingNo;
-    document.getElementById('wbQrCode').textContent = trackingNo.substring(0, 12);
+
+    // Cập nhật Barcode và Mã vận đơn
+    document.getElementById('wbTrackingNo').textContent = trackingNo;
+    document.getElementById('wbBarcodeImg').src = 'https://barcode.tec-it.com/barcode.ashx?data=' + trackingNo + '&code=Code128&translate-esc=on&dpi=96&height=40&text=no';
+
+    // Cập nhật địa chỉ
     document.getElementById('wbPickupAddress').textContent = pickupAddress;
 
-document.getElementById('wbBarcodeImg').src = 'https://barcode.tec-it.com/barcode.ashx?data=' + trackingNo + '&code=Code128&translate-esc=on&dpi=96&height=40&text=no';    document.getElementById('wbQrImg').src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + trackingNo;
-
-    var sortCode = 'SE1-' + Math.floor(10 + Math.random()*90) + '-' + Math.floor(10 + Math.random()*90) + '-TU06';
+    // Cập nhật Mã phân loại (Sort code)
+    var sortCode = 'SE1-' + Math.floor(10 + Math.random()*90) + '-' + Math.floor(10 + Math.random()*90) + '-TU01';
     document.getElementById('wbSortCode').textContent = sortCode;
 
-    document.getElementById('wbWeightDisplay').textContent = parseInt(weight).toLocaleString('vi-VN') + ' g';
+    // Cập nhật mã QR và mã phụ (giống ảnh mẫu)
+    var subQrCode = 'HCA-50-07-' + Math.floor(1000 + Math.random() * 9000) + 'R';
+    document.getElementById('wbQrCode').textContent = subQrCode;
+    document.getElementById('wbQrImg').src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + trackingNo;
 
+    // Cập nhật Ngày tháng
+    var now = new Date();
+    var dateStr = String(now.getDate()).padStart(2, '0') + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + now.getFullYear();
+    var timeStr = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+    document.getElementById('wbDateText').innerHTML = dateStr + '<br>' + timeStr;
+
+    // Cập nhật Cân nặng
+    document.getElementById('wbWeightDisplay').textContent = weight.toLocaleString('vi-VN') + ' g';
+
+    // Tính COD (dựa trên tổng phí đã gồm phụ phí)
     var finalCod = 0;
     if (!isPaid) {
         finalCod = orderTotal;
         if (payer === 'buyer' && !isFreeShip) {
-            finalCod += baseFee;
+            finalCod += totalFee;
         }
     }
     document.getElementById('wbCodAmount').textContent = finalCod.toLocaleString('vi-VN') + ' VND';
 
+    // Hiển thị tem
     document.getElementById('waybillWrap').classList.add('show');
     document.getElementById('shippingBox').style.display = 'none';
 
+    // Cuộn xuống
     document.getElementById('waybillWrap').scrollIntoView({ behavior: 'smooth' });
 }
 

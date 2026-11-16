@@ -58,7 +58,11 @@ if ($action === 'send') {
     $_SESSION['otp_last_sent']  = time();
 
     $userName = $_SESSION['user']['full_name'] ?? 'Khách hàng';
-    $subject  = '🔐 Mã OTP xác minh thanh toán — THE ATELIER';
+    $subject  = 'Mã OTP xác minh thanh toán — THE ATELIER';
+
+    // Icon SVG (dùng chung, giữ style gọn gàng & chuyên nghiệp)
+    $iconClock = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8a8377" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:8px"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>';
+    $iconLock  = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8a8377" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:8px"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>';
 
     $htmlBody = '
     <!DOCTYPE html>
@@ -78,8 +82,8 @@ if ($action === 'send') {
                     <p style="margin:0;font-family:Courier New,monospace;font-size:38px;font-weight:700;letter-spacing:0.35em;color:#78350f">' . $otp . '</p>
                 </div>
                 <p style="font-size:13px;color:#8a8377;margin-top:24px">
-                    ⏱ Mã có hiệu lực trong <b>5 phút</b>.<br>
-                    🔒 Không chia sẻ mã này với bất kỳ ai.
+                    ' . $iconClock . 'Mã có hiệu lực trong <b>5 phút</b>.<br>
+                    ' . $iconLock  . 'Không chia sẻ mã này với bất kỳ ai.
                 </p>
             </div>
             <div style="background:#e8e0d0;padding:16px;text-align:center;font-size:11px;color:#8a8377">
@@ -145,10 +149,10 @@ if ($action === 'verify') {
         exit;
     }
 
-    // ✅ Hỗ trợ context — checkout (mặc định) hoặc settings
-$context = $_POST['context'] ?? 'checkout';
-$sessionKey = ($context === 'settings') ? 'settings_otp_verified' : 'otp_verified';
-$_SESSION[$sessionKey] = true;
+    // Ghi chú: hỗ trợ context — checkout (mặc định) hoặc settings
+    $context    = $_POST['context'] ?? 'checkout';
+    $sessionKey = ($context === 'settings') ? 'settings_otp_verified' : 'otp_verified';
+    $_SESSION[$sessionKey] = true;
     unset($_SESSION['otp_code'], $_SESSION['otp_expires_at'], $_SESSION['otp_attempts']);
 
     echo json_encode(['ok' => true, 'msg' => 'Xác minh thành công.']);

@@ -13,6 +13,11 @@ if (($_SESSION['user']['role'] ?? '') !== 'admin') {
     exit;
 }
 
+// Khởi tạo CSRF Token nếu chưa có
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 include 'includes/admin_header.php';
 
 /* ============================================================
@@ -25,7 +30,7 @@ try {
             tax_code        VARCHAR(50) NULL,
             business_name   VARCHAR(200) NULL,
             tax_office      VARCHAR(200) NULL,
-            exempt_threshold DECIMAL(15,0) DEFAULT 500000000,
+            exempt_threshold DECIMAL(15,0) DEFAULT 1000000000,
             vat_rate_goods  DECIMAL(5,2) DEFAULT 1.00,
             pit_rate_goods  DECIMAL(5,2) DEFAULT 0.50,
             declaration_period ENUM('monthly','quarterly','yearly') DEFAULT 'quarterly',
@@ -33,7 +38,7 @@ try {
             updated_at      DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     ");
-    $pdo->exec("INSERT IGNORE INTO tax_settings (id) VALUES (1)");
+    $pdo->exec("INSERT IGNORE INTO tax_settings (id, exempt_threshold) VALUES (1, 1000000000)");
 
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS tax_reports (
@@ -61,8 +66,13 @@ try {
 }
 
 /* ============================================================
-   HELPER
+   HELPER (Đã thêm PHPDoc để VS Code không báo lỗi)
    ============================================================ */
+/**
+ * Định dạng tiền tệ VNĐ
+ * @param float|int $n
+ * @return string
+ */
 function fmtMoney($n) {
     return number_format((float)$n, 0, ',', '.') . 'đ';
 }
@@ -86,7 +96,6 @@ function calcPeriodRange(string $type, string $value): array {
     return ["$y-01-01", "$y-12-31"];
 }
 
-/** Lấy field đầu tiên có giá trị trong danh sách keys (dùng khi tên cột có thể khác nhau) */
 function pickField(array $row, array $keys, $default = '') {
     foreach ($keys as $k) {
         if (isset($row[$k]) && $row[$k] !== '') return $row[$k];
@@ -103,7 +112,7 @@ unset($_SESSION['admin_flash']);
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if (empty($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
-        $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Phiên làm việc hết hạn.'];
+        $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Phiên làm việc hết hạn. Vui lòng thử lại.'];
         header('Location: tax.php'); exit;
     }
 
@@ -114,7 +123,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $taxCode      = trim($_POST['tax_code'] ?? '');
         $businessName = trim($_POST['business_name'] ?? '');
         $taxOffice    = trim($_POST['tax_office'] ?? '');
-        $threshold    = max(0, (float)($_POST['exempt_threshold'] ?? 500000000));
+        $threshold    = max(0, (float)($_POST['exempt_threshold'] ?? 1000000000));
         $vatRate      = max(0, min(20, (float)($_POST['vat_rate_goods'] ?? 1)));
         $pitRate      = max(0, min(20, (float)($_POST['pit_rate_goods'] ?? 0.5)));
         $period       = $_POST['declaration_period'] ?? 'quarterly';
@@ -140,7 +149,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } catch (Exception $e) {
             $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Lỗi: ' . $e->getMessage()];
         }
-        header('Location: tax.php'); exit;
+        header('Location: tax.php?tab=tax'); exit;
     }
 
     /* ---------- 2. TẠO BÁO CÁO THUẾ ---------- */
@@ -153,16 +162,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         if ($periodValue === '') {
             $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Vui lòng chọn kỳ kê khai.'];
-            header('Location: tax.php'); exit;
+            header('Location: tax.php?tab=tax'); exit;
         }
 
         [$start, $end] = calcPeriodRange($periodType, $periodValue);
 
         $settings = $pdo->query("SELECT * FROM tax_settings WHERE id = 1")->fetch(PDO::FETCH_ASSOC) ?: [];
-        $threshold = (float)($settings['exempt_threshold'] ?? 500000000);
+        $threshold = (float)($settings['exempt_threshold'] ?? 1000000000);
         $vatRate   = (float)($settings['vat_rate_goods']   ?? 1);
         $pitRate   = (float)($settings['pit_rate_goods']   ?? 0.5);
 
+        // Doanh thu trong kỳ
         $stmt = $pdo->prepare("
             SELECT COALESCE(SUM(total_amount), 0)
             FROM orders
@@ -172,6 +182,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([$start, $end]);
         $periodRevenue = (float)$stmt->fetchColumn();
 
+        // Doanh thu cả năm (để xét duyệt ngưỡng)
         $year = (int)date('Y', strtotime($start));
         $stmtY = $pdo->prepare("
             SELECT COALESCE(SUM(total_amount), 0)
@@ -182,14 +193,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmtY->execute([$year]);
         $yearRevenue = (float)$stmtY->fetchColumn();
 
+        // TÍNH THUẾ THEO LUẬT MỚI (Trên 1 tỷ mới đóng thuế trên TOÀN BỘ doanh thu)
         if ($yearRevenue <= $threshold) {
-            $exemptAmount   = $periodRevenue;
+            $exemptAmount   = $periodRevenue; // Được miễn toàn bộ
             $taxableRevenue = 0;
         } else {
-            $overAmount = $yearRevenue - $threshold;
-            $shareRatio = $yearRevenue > 0 ? $periodRevenue / $yearRevenue : 0;
-            $taxableRevenue = round($overAmount * $shareRatio);
-            $exemptAmount   = $periodRevenue - $taxableRevenue;
+            // Nếu vượt ngưỡng năm, doanh thu chịu thuế là toàn bộ doanh thu trong kỳ
+            $taxableRevenue = $periodRevenue; 
+            $exemptAmount   = 0;
         }
 
         $vatAmount = round($taxableRevenue * $vatRate / 100);
@@ -220,7 +231,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } catch (Exception $e) {
             $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Lỗi: ' . $e->getMessage()];
         }
-        header('Location: tax.php'); exit;
+        header('Location: tax.php?tab=tax'); exit;
     }
 
     /* ---------- 3. ĐỔI TRẠNG THÁI BÁO CÁO ---------- */
@@ -242,7 +253,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } catch (Exception $e) {
             $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Lỗi: ' . $e->getMessage()];
         }
-        header('Location: tax.php'); exit;
+        header('Location: tax.php?tab=tax'); exit;
     }
 
     /* ---------- 4. XÓA BÁO CÁO ---------- */
@@ -254,7 +265,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } catch (Exception $e) {
             $_SESSION['admin_flash'] = ['type' => 'error', 'msg' => 'Lỗi: ' . $e->getMessage()];
         }
-        header('Location: tax.php'); exit;
+        header('Location: tax.php?tab=tax'); exit;
     }
 }
 
@@ -263,7 +274,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
    ============================================================ */
 $settings = $pdo->query("SELECT * FROM tax_settings WHERE id = 1 LIMIT 1")->fetch(PDO::FETCH_ASSOC) ?: [];
 
-$threshold = (float)($settings['exempt_threshold'] ?? 500000000);
+$threshold = (float)($settings['exempt_threshold'] ?? 1000000000);
 $vatRate   = (float)($settings['vat_rate_goods']   ?? 1);
 $pitRate   = (float)($settings['pit_rate_goods']   ?? 0.5);
 
@@ -323,15 +334,13 @@ $statusMap = [
 /* ============================================================
    LẤY DỮ LIỆU TAB DOANH THU
    ============================================================ */
-
-// Tự dò cột payment method
 $pmCol = null;
 foreach (['payment_method', 'payment_type', 'payment_gateway', 'payment'] as $col) {
     try {
         $pdo->query("SELECT $col FROM orders LIMIT 1");
         $pmCol = $col;
         break;
-    } catch (Exception $e) { /* thử cột kế tiếp */ }
+    } catch (Exception $e) { }
 }
 if (!$pmCol) $pmCol = 'payment_method';
 
@@ -372,15 +381,12 @@ $revStatus = trim($_GET['rev_status'] ?? '');
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $revFrom)) $revFrom = date('Y-m-01');
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $revTo))   $revTo   = date('Y-m-t');
 
-// Xác định tab đang mở
 $activeTab = $_GET['tab'] ?? 'revenue';
 if (!in_array($activeTab, ['tax', 'revenue'], true)) $activeTab = 'tax';
-if (!empty($_GET['rev_from']) || !empty($_GET['rev_to'])
-    || $revMethod !== '' || $revStatus !== '') {
+if (!empty($_GET['rev_from']) || !empty($_GET['rev_to']) || $revMethod !== '' || $revStatus !== '') {
     $activeTab = 'revenue';
 }
 
-// Build query doanh thu
 $whereRev  = "WHERE DATE(o.created_at) BETWEEN ? AND ?";
 $paramsRev = [$revFrom, $revTo];
 
@@ -433,7 +439,6 @@ try {
 $revTotalAmount = array_sum(array_column($revByMethod, 'total'));
 $revTotalCount  = array_sum(array_column($revByMethod, 'cnt'));
 
-// URL build helper cho filter links
 function buildRevUrl(array $params): string {
     return 'tax.php?' . http_build_query(array_merge(['tab' => 'revenue'], $params));
 }
@@ -534,6 +539,10 @@ function buildRevUrl(array $params): string {
 
 /* ==== BTN WITH ICON ==== */
 .btn-adm i { font-size: 1.05rem; vertical-align: -2px; }
+
+.help-box[hidden] {
+    display: none !important;
+}
 </style>
 
 <!-- ============================================================ -->
@@ -548,7 +557,7 @@ function buildRevUrl(array $params): string {
     </div>
     <div style="display:flex;gap:0.5rem">
         <button type="button" class="btn-adm btn-adm--ghost"
-                onclick="document.getElementById('helpBox').toggleAttribute('hidden')">
+                onclick="toggleHelpBox()">
             <i class="ph ph-question"></i> Hướng dẫn
         </button>
     </div>
@@ -587,12 +596,11 @@ function buildRevUrl(array $params): string {
         <i class="ph ph-info"></i> Hiểu nhanh về thuế hộ kinh doanh
     </h3>
     <ul>
-        <li><b>Ngưỡng miễn thuế:</b> Doanh thu &lt; 500 triệu/năm → miễn cả GTGT và TNCN.</li>
-        <li><b>Vượt 500 triệu:</b> Nộp <b>1% GTGT + 0,5% TNCN = 1,5%</b> trên phần doanh thu vượt ngưỡng.</li>
+        <li><b>Ngưỡng miễn thuế:</b> Doanh thu năm <b>từ 1 Tỷ đồng trở xuống</b> → miễn cả thuế GTGT và TNCN.</li>
+        <li><b>Vượt 1 Tỷ:</b> Phải nộp <b>1% GTGT + 0,5% TNCN = 1,5%</b> tính trên <b>toàn bộ doanh thu</b> phát sinh trong kỳ kê khai (không trừ đi 1 Tỷ).</li>
         <li><b>Kê khai tại:</b> <a href="https://thuedientu.gdt.gov.vn" target="_blank">thuedientu.gdt.gov.vn</a> (phân hệ CÁ NHÂN) hoặc app <b>eTax Mobile</b>.</li>
         <li><b>Tần suất:</b> Theo quý (mặc định) hoặc theo tháng.</li>
-        <li><b>Doanh thu tính thuế:</b> Chỉ tính đơn <b>delivered / shipped / confirmed</b> — không tính đơn cancelled.</li>
-        <li><b>Lưu ý:</b> Nếu bán trên Shopee/Lazada, sàn đã khấu trừ và nộp thay — chỉ kê khai phần bán trên website riêng.</li>
+        <li><b>Doanh thu tính thuế:</b> Chỉ tính các đơn hàng <b>Thành công / Đã giao / Đã xác nhận</b>. Đơn Hủy không tính.</li>
     </ul>
 </div>
 
@@ -681,17 +689,17 @@ function buildRevUrl(array $params): string {
         <div class="rev-warning rev-warning--danger">
             <i class="ph ph-warning-circle"></i>
             <div>
-                <b>Đã vượt ngưỡng miễn thuế!</b> Bạn cần kê khai và nộp thuế
+                <b>Đã vượt ngưỡng 1 Tỷ!</b> Bạn cần kê khai và nộp thuế
                 <b><?php echo $vatRate; ?>% GTGT + <?php echo $pitRate; ?>% TNCN</b>
-                trên phần doanh thu vượt <?php echo fmtMoney($threshold); ?>.
+                trên <b>toàn bộ doanh thu</b> phát sinh.
             </div>
         </div>
     <?php elseif ($usedPct >= 80): ?>
         <div class="rev-warning rev-warning--warning">
             <i class="ph ph-warning"></i>
             <div>
-                <b>Sắp chạm ngưỡng!</b> Doanh thu đã đạt <?php echo number_format($usedPct, 1); ?>%.
-                Chuẩn bị kê khai khi vượt 500 triệu.
+                <b>Sắp chạm ngưỡng 1 Tỷ!</b> Doanh thu đã đạt <?php echo number_format($usedPct, 1); ?>%.
+                Chuẩn bị kê khai khi vượt mức này.
             </div>
         </div>
     <?php endif; ?>
@@ -705,7 +713,7 @@ function buildRevUrl(array $params): string {
         Cấu hình thuế
     </h2>
 
-    <form method="POST" action="tax.php">
+    <form method="POST" action="tax.php?tab=tax">
         <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
         <input type="hidden" name="action" value="save_settings">
 
@@ -737,7 +745,7 @@ function buildRevUrl(array $params): string {
                 <input type="number" name="exempt_threshold" class="adm-input"
                        value="<?php echo (int)$threshold; ?>" min="0" step="1000000">
                 <div style="font-size:0.72rem;color:var(--admin-text-muted);margin-top:4px;">
-                    Mặc định: 500.000.000đ (theo luật 2025)
+                    Mặc định: 1.000.000.000đ (theo luật mới)
                 </div>
             </div>
             <div class="adm-form-group">
@@ -804,7 +812,7 @@ function buildRevUrl(array $params): string {
         Tạo báo cáo thuế theo kỳ
     </h2>
 
-    <form method="POST" action="tax.php" id="createReportForm">
+    <form method="POST" action="tax.php?tab=tax" id="createReportForm">
         <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
         <input type="hidden" name="action" value="create_report">
 
@@ -831,12 +839,11 @@ function buildRevUrl(array $params): string {
         <div class="info-note">
             <i class="ph ph-lightbulb"></i>
             <div>
-                <b>Cách tính:</b><br>
+                <b>Cách tính thuế mới (Trên 1 Tỷ):</b><br>
                 1. Tính tổng doanh thu <b>cả năm</b> có chứa kỳ → so sánh với ngưỡng <?php echo fmtMoney($threshold); ?><br>
-                2. Nếu năm chưa vượt ngưỡng → miễn thuế, báo cáo vẫn tạo nhưng thuế = 0<br>
-                3. Nếu năm đã vượt → tính phần vượt, phân bổ theo tỷ lệ doanh thu kỳ/năm<br>
-                4. Thuế GTGT = Doanh thu tính thuế × <?php echo $vatRate; ?>% ·
-                   TNCN = Doanh thu tính thuế × <?php echo $pitRate; ?>%
+                2. Nếu năm chưa vượt ngưỡng → miễn thuế, báo cáo tạo ra sẽ có thuế = 0<br>
+                3. Nếu năm đã vượt ngưỡng → Thuế tính trên <b>toàn bộ doanh thu của kỳ</b>.<br>
+                4. Thuế GTGT = Doanh thu kỳ × <?php echo $vatRate; ?>% · TNCN = Doanh thu kỳ × <?php echo $pitRate; ?>%
             </div>
         </div>
 
@@ -921,7 +928,7 @@ function buildRevUrl(array $params): string {
                                 </span>
                             </td>
                             <td style="padding:10px 12px;text-align:right;white-space:nowrap">
-                                <form method="POST" action="tax.php" style="display:inline"
+                                <form method="POST" action="tax.php?tab=tax" style="display:inline"
                                       onsubmit="return confirm('Đổi trạng thái báo cáo này?')">
                                     <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                                     <input type="hidden" name="action" value="update_status">
@@ -934,7 +941,7 @@ function buildRevUrl(array $params): string {
                                         <option value="paid"     <?php echo $r['status'] === 'paid'     ? 'selected' : ''; ?>>Đã nộp</option>
                                     </select>
                                 </form>
-                                <form method="POST" action="tax.php" style="display:inline;margin-left:4px"
+                                <form method="POST" action="tax.php?tab=tax" style="display:inline;margin-left:4px"
                                       onsubmit="return confirm('Xóa báo cáo này? Hành động không thể hoàn tác.')">
                                     <input type="hidden" name="csrf_token" value="<?php echo $_SESSION['csrf_token']; ?>">
                                     <input type="hidden" name="action" value="delete_report">
@@ -1166,6 +1173,18 @@ function buildRevUrl(array $params): string {
 <?php endif; ?>
 
 <script>
+/* ============================================================
+   TOGGLE HELP BOX
+   ============================================================ */
+function toggleHelpBox() {
+    var box = document.getElementById('helpBox');
+    if (box.hasAttribute('hidden')) {
+        box.removeAttribute('hidden');
+    } else {
+        box.setAttribute('hidden', '');
+    }
+}
+
 /* ============================================================
    AUTO GENERATE PERIOD VALUE
    ============================================================ */

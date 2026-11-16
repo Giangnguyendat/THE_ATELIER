@@ -14,7 +14,7 @@ if (!function_exists('calculateProductPrice')) {
      */
     function calculateProductPrice(array $product): array {
         global $pdo;
-        
+
         // Cache danh sách sự kiện để không phải query DB nhiều lần trong cùng 1 request
         static $cachedEvents = null;
 
@@ -37,7 +37,6 @@ if (!function_exists('calculateProductPrice')) {
                 $stmt = $pdo->query("SELECT * FROM discount_events WHERE active = 1");
                 $cachedEvents = $stmt->fetchAll(PDO::FETCH_ASSOC);
             } catch (Exception $e) {
-                // Ghi log lỗi nếu cần, nhưng không làm crash trang
                 error_log("Lỗi query discount_events: " . $e->getMessage());
             }
         }
@@ -46,51 +45,46 @@ if (!function_exists('calculateProductPrice')) {
         // 2. KIỂM TRA SỰ KIỆN NÀO ĐANG ÁP DỤNG
         // ============================================================
         if (!empty($cachedEvents)) {
-            $todayDay   = (int)date('j'); // Ngày (1-31)
-            $todayMonth = (int)date('n'); // Tháng (1-12)
+            $today = new DateTime();
+            $currentMD = (int)$today->format('m') * 100 + (int)$today->format('d'); // VD: Ngày 09/11 -> 1109
 
             foreach ($cachedEvents as $ev) {
-                $sm = (int)$ev['start_month'];
-                $sd = (int)$ev['start_day'];
-                $em = (int)$ev['end_month'];
-                $ed = (int)$ev['end_day'];
+                $startMD = ((int)$ev['start_month']) * 100 + (int)$ev['start_day'];
+                $endMD   = ((int)$ev['end_month']) * 100 + (int)$ev['end_day'];
 
-                // Kiểm tra thời gian (Hỗ trợ cả bắc tháng và bắc năm)
+                // Kiểm tra thời gian chuẩn xác (cùng tháng, qua nhiều tháng, hoặc vắt qua năm mới)
                 $isTimeMatch = false;
-                
-                if ($sm === $em) {
-                    // Sự kiện trong cùng 1 tháng (VD: 10/10 - 20/10)
-                    if ($todayMonth === $sm && $todayDay >= $sd && $todayDay <= $ed) {
-                        $isTimeMatch = true;
-                    }
+                if ($startMD <= $endMD) {
+                    // Cùng năm: ví dụ 08/03 (308) -> 15/03 (315) hoặc 01/05 (501) -> 31/07 (731)
+                    $isTimeMatch = ($currentMD >= $startMD && $currentMD <= $endMD);
                 } else {
-                    // Sự kiện bắc qua 2 tháng hoặc 2 năm (VD: 25/11 - 05/12 hoặc 25/12 - 05/01)
-                    if (($todayMonth === $sm && $todayDay >= $sd) || ($todayMonth === $em && $todayDay <= $ed)) {
-                        $isTimeMatch = true;
-                    }
+                    // Vắt qua năm mới: ví dụ 25/12 (1225) -> 05/01 (105)
+                    $isTimeMatch = ($currentMD >= $startMD || $currentMD <= $endMD);
                 }
 
-                if (!$isTimeMatch) continue;
+                if (!$isTimeMatch) {
+                    continue;
+                }
 
-                                // Kiểm tra giới tính áp dụng
-                $evGender = $ev['target_gender']; // 'male', 'female', 'unisex', 'all'
+                // Kiểm tra giới tính áp dụng
+                $evGender = $ev['target_gender'] ?? 'all'; // 'male', 'female', 'unisex', 'all'
                 $isGenderMatch = false;
 
                 if ($evGender === 'all') {
-                    // Sự kiện dành cho TẤT CẢ sản phẩm -> Luôn khớp
+                    // Sự kiện dành cho TẤT CẢ sản phẩm
                     $isGenderMatch = true;
                 } elseif ($evGender === $productGender) {
-                    // Khớp chính xác (Ví dụ: sự kiện Nữ áp dụng cho SP Nữ, Unisex áp dụng cho SP Unisex)
+                    // Khớp chính xác giới tính
                     $isGenderMatch = true;
-                } elseif ($productGender === 'unisex' && in_array($evGender, ['male', 'female'])) {
-                    // Sự kiện dành riêng cho Nam HOẶC Nữ vẫn áp dụng cho sản phẩm Unisex
+                } elseif ($productGender === 'unisex' && in_array($evGender, ['male', 'female'], true)) {
+                    // Sự kiện cho Nam hoặc Nữ vẫn áp dụng với đồ Unisex
                     $isGenderMatch = true;
                 }
 
                 if ($isGenderMatch) {
                     $evDiscount = (int)$ev['discount_percent'];
-                    
-                    // Nếu mức giảm của sự kiện cao hơn mức giảm hiện tại -> Ghi đè
+
+                    // Lấy mức chiết khấu cao nhất
                     if ($evDiscount > $bestDiscount) {
                         $bestDiscount = $evDiscount;
                         $eventName    = $ev['name'];
@@ -105,7 +99,7 @@ if (!function_exists('calculateProductPrice')) {
         // ============================================================
         $finalPrice = $originalPrice;
         if ($bestDiscount > 0) {
-            $finalPrice = $originalPrice * (1 - $bestDiscount / 100);
+            $finalPrice = max(0, $originalPrice * (1 - $bestDiscount / 100));
         }
 
         return [

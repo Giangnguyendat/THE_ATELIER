@@ -187,16 +187,50 @@ $stmtTop = $pdo->prepare("
 $stmtTop->execute([$fromStr, $toStr]);
 $topProducts = $stmtTop->fetchAll(PDO::FETCH_ASSOC);
 
-/* 6. SẮP HẾT HÀNG */
-$lowStock = $pdo->query("
-    SELECT p.id, p.name, p.image_url, COALESCE(SUM(ps.stock), 0) AS total_stock
-    FROM products p
-    LEFT JOIN product_sizes ps ON p.id = ps.product_id
-    GROUP BY p.id, p.name, p.image_url
-    HAVING total_stock < 10
-    ORDER BY total_stock ASC
-    LIMIT 10
-")->fetchAll(PDO::FETCH_ASSOC);
+/* ============================================================
+   6. CẢNH BÁO TỒN KHO (GOM NHÓM THEO SẢN PHẨM)
+   ============================================================ */
+$stmtStockIssues = $pdo->query("
+    SELECT p.id, p.name, p.image_url, ps.size, ps.stock
+    FROM product_sizes ps
+    JOIN products p ON ps.product_id = p.id
+    WHERE ps.stock <= 5
+    ORDER BY ps.stock ASC, p.name ASC
+");
+$stockRows = $stmtStockIssues->fetchAll(PDO::FETCH_ASSOC);
+
+$prodIssues = [];
+foreach ($stockRows as $row) {
+    $pid = (int)$row['id'];
+    if (!isset($prodIssues[$pid])) {
+        $prodIssues[$pid] = [
+            'id' => $pid, 'name' => $row['name'], 'image_url' => $row['image_url'], 
+            'sizes' => [], 'has_out' => false
+        ];
+    }
+    $prodIssues[$pid]['sizes'][] = [
+        'size' => $row['size'],
+        'stock' => (int)$row['stock']
+    ];
+    if ((int)$row['stock'] === 0) {
+        $prodIssues[$pid]['has_out'] = true;
+    }
+}
+
+$outStockGrouped = [];
+$lowStockGrouped = [];
+
+foreach ($prodIssues as $pid => $data) {
+    if ($data['has_out']) {
+        $outStockGrouped[] = $data;
+    } else {
+        $lowStockGrouped[] = $data;
+    }
+}
+
+// Giới hạn số lượng hiển thị (VD: 15 sản phẩm)
+$outStockGrouped = array_slice($outStockGrouped, 0, 15);
+$lowStockGrouped = array_slice($lowStockGrouped, 0, 15);
 
 /* 7. TỒN LÂU, BÁN CHẬM */
 $stmtSlow = $pdo->prepare("
@@ -223,7 +257,7 @@ $stmtSlow = $pdo->prepare("
 $stmtSlow->execute();
 $slowProducts = $stmtSlow->fetchAll(PDO::FETCH_ASSOC);
 
-/* 8. BANNER (đưa lên đầu trang) */
+/* 8. BANNER */
 $banners = $pdo->query("SELECT * FROM banners WHERE active = 1 AND position = 'homepage' ORDER BY created_at DESC LIMIT 5")->fetchAll(PDO::FETCH_ASSOC);
 $bannerCount = count($banners);
 ?>
@@ -411,11 +445,24 @@ $bannerCount = count($banners);
 .row__stat { text-align: right; font-family: 'IBM Plex Mono', monospace; }
 .row__qty { font-weight: 700; font-size: .95rem; color: var(--admin-accent); }
 .row__rev { font-size: .72rem; color: var(--admin-text-muted); margin-top: 2px; }
-.pill {
-    font-size: .78rem; font-weight: 600; padding: 3px 10px; border-radius: 99px; white-space: nowrap;
+
+/* CSS CHO CÁC NHÃN SIZE GỌN GÀNG */
+.size-tags { 
+    display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; 
+    align-items: center; max-width: 130px; 
 }
-.pill--warn { background: #fef3c7; color: #92400e; }
-.pill--bad { background: #fee2e2; color: #991b1b; }
+.size-tag {
+    display: inline-block;
+    font-weight: 700;
+    font-size: 0.7rem;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: 'IBM Plex Mono', monospace;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+.size-tag--out { background: #fee2e2; color: #991b1b; border: 1px solid #fecaca; }
+.size-tag--low { background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
 
 .alert-head {
     display: flex; align-items: center; gap: .5rem; padding: .85rem 1.1rem;
@@ -584,6 +631,7 @@ $bannerCount = count($banners);
 
     <!-- ============ 5. TOP SẢN PHẨM + CẢNH BÁO KHO ============ -->
     <section class="cols-lists">
+        <!-- TOP SẢN PHẨM -->
         <div>
             <div class="dash-h">
                 <h2>Sản phẩm bán chạy <small>trong kỳ đã chọn</small></h2>
@@ -599,7 +647,7 @@ $bannerCount = count($banners);
                             $rankCls = $rank === 1 ? 'gold' : ($rank === 2 ? 'silver' : ($rank === 3 ? 'bronze' : ''));
                         ?>
                         <li>
-                            <a class="row row--top" href="products.php?edit=<?php echo (int)$p['product_id']; ?>">
+                            <a class="row row--top" href="products.php?view=<?php echo (int)$p['product_id']; ?>">
                                 <div class="row__rank <?php echo $rankCls; ?>"><?php echo $rank; ?></div>
                                 <img src="<?php echo adminImg($p['image_url']); ?>" alt="">
                                 <div class="row__info">
@@ -618,24 +666,36 @@ $bannerCount = count($banners);
             </div>
         </div>
 
+        <!-- CẢNH BÁO KHO (GỌN GÀNG) -->
         <div>
             <div class="dash-h"><h2>Cảnh báo tồn kho</h2></div>
             <div class="stack">
+                <!-- KHỐI HẾT HÀNG (0) -->
                 <div class="panel">
-                    <div class="alert-head alert-head--warn">Sắp hết hàng <span class="n"><?php echo count($lowStock); ?></span></div>
-                    <?php if (empty($lowStock)): ?>
-                        <div class="empty">Không có sản phẩm nào sắp hết hàng.</div>
+                    <div class="alert-head alert-head--bad">
+                        <svg style="width:18px;height:18px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="15" y1="9" x2="9" y2="15"></line><line x1="9" y1="9" x2="15" y2="15"></line></svg>
+                        Đã hết hàng 
+                        <span class="n"><?php echo count($outStockGrouped); ?></span>
+                    </div>
+                    <?php if (empty($outStockGrouped)): ?>
+                        <div class="empty">Không có sản phẩm nào hết hàng.</div>
                     <?php else: ?>
                         <ul class="alert-scroll">
-                            <?php foreach ($lowStock as $p): ?>
+                            <?php foreach ($outStockGrouped as $p): ?>
                             <li>
-                                <a class="row row--alert" href="products.php?edit=<?php echo (int)$p['id']; ?>">
+                                <a class="row row--alert" href="products.php?view=<?php echo (int)$p['id']; ?>" title="Bấm để xem chi tiết">
                                     <img src="<?php echo adminImg($p['image_url']); ?>" alt="">
                                     <div class="row__info">
                                         <div class="row__name"><?php echo sanitize($p['name']); ?></div>
                                         <div class="row__meta">SP #<?php echo (int)$p['id']; ?></div>
                                     </div>
-                                    <span class="pill pill--warn">Còn <?php echo (int)$p['total_stock']; ?></span>
+                                    <div class="size-tags">
+                                        <?php foreach ($p['sizes'] as $sz): 
+                                            $cls = $sz['stock'] == 0 ? 'size-tag--out' : 'size-tag--low';
+                                        ?>
+                                            <span class="size-tag <?php echo $cls; ?>" title="Còn <?php echo $sz['stock']; ?> chiếc"><?php echo $sz['size']; ?></span>
+                                        <?php endforeach; ?>
+                                    </div>
                                 </a>
                             </li>
                             <?php endforeach; ?>
@@ -643,6 +703,40 @@ $bannerCount = count($banners);
                     <?php endif; ?>
                 </div>
 
+                <!-- KHỐI SẮP HẾT (< 5) -->
+                <div class="panel">
+                    <div class="alert-head alert-head--warn">
+                        <svg style="width:18px;height:18px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                        Sắp hết hàng (Dưới 5) 
+                        <span class="n"><?php echo count($lowStockGrouped); ?></span>
+                    </div>
+                    <?php if (empty($lowStockGrouped)): ?>
+                        <div class="empty">Không có sản phẩm nào sắp hết hàng.</div>
+                    <?php else: ?>
+                        <ul class="alert-scroll">
+                            <?php foreach ($lowStockGrouped as $p): ?>
+                            <li>
+                                <a class="row row--alert" href="products.php?view=<?php echo (int)$p['id']; ?>" title="Bấm để xem chi tiết">
+                                    <img src="<?php echo adminImg($p['image_url']); ?>" alt="">
+                                    <div class="row__info">
+                                        <div class="row__name"><?php echo sanitize($p['name']); ?></div>
+                                        <div class="row__meta">SP #<?php echo (int)$p['id']; ?></div>
+                                    </div>
+                                    <div class="size-tags">
+                                        <?php foreach ($p['sizes'] as $sz): 
+                                            $cls = $sz['stock'] == 0 ? 'size-tag--out' : 'size-tag--low';
+                                        ?>
+                                            <span class="size-tag <?php echo $cls; ?>" title="Còn <?php echo $sz['stock']; ?> chiếc"><?php echo $sz['size']; ?></span>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </a>
+                            </li>
+                            <?php endforeach; ?>
+                        </ul>
+                    <?php endif; ?>
+                </div>
+
+                <!-- KHỐI TỒN LÂU, BÁN CHẬM -->
                 <div class="panel">
                     <div class="alert-head alert-head--bad">Tồn lâu, bán chậm <span class="n"><?php echo count($slowProducts); ?></span></div>
                     <?php if (empty($slowProducts)): ?>
@@ -651,13 +745,13 @@ $bannerCount = count($banners);
                         <ul class="alert-scroll">
                             <?php foreach ($slowProducts as $p): ?>
                             <li>
-                                <a class="row row--alert" href="products.php?edit=<?php echo (int)$p['id']; ?>">
+                                <a class="row row--alert" href="products.php?view=<?php echo (int)$p['id']; ?>" title="Bấm để xem chi tiết">
                                     <img src="<?php echo adminImg($p['image_url']); ?>" alt="">
                                     <div class="row__info">
                                         <div class="row__name"><?php echo sanitize($p['name']); ?></div>
                                         <div class="row__meta">30 ngày qua bán <?php echo (int)$p['sold_30d']; ?> · Kho <?php echo (int)$p['total_stock']; ?></div>
                                     </div>
-                                    <span class="pill pill--bad"><?php echo (int)$p['days_old']; ?> ngày</span>
+                                    <span class="size-tag size-tag--out" style="border-radius:99px;"><?php echo (int)$p['days_old']; ?> ngày</span>
                                 </a>
                             </li>
                             <?php endforeach; ?>

@@ -228,6 +228,29 @@ document.addEventListener('DOMContentLoaded', () => {
             scrollToBottom();
         }
     }
+    // --- THÊM HÀM NÀY VÀO DƯỚI HÀM displayProducts() ---
+    function displayQuickReplies(suggestions) {
+        if (!Array.isArray(suggestions) || suggestions.length === 0) return;
+
+        const container = document.createElement('div');
+        container.className = 'chat-quick-replies';
+
+        suggestions.forEach(text => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'chat-quick-btn';
+            btn.textContent = text;
+            btn.addEventListener('click', () => {
+                input.value = text;
+                container.remove();
+                sendMessage();
+            });
+            container.appendChild(btn);
+        });
+
+        messagesDiv.appendChild(container);
+        scrollToBottom();
+    }
 
     // ==========================================================
     // 8. GỬI TIN NHẮN
@@ -284,6 +307,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (Array.isArray(data.products) && data.products.length > 0) {
                 displayProducts(data.products);
+            }
+            if (Array.isArray(data.suggestions) && data.suggestions.length > 0) {
+                displayQuickReplies(data.suggestions);
             }
         } catch (error) {
             console.error('Chatbot Error:', error);

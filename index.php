@@ -1,12 +1,232 @@
 <?php require_once 'includes/config.php'; ?>
 <?php include 'includes/header.php'; ?>
 
+<?php
+// Đảm bảo có CSRF token
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+?>
+
 <style>
     /* THÊM CSS ĐỂ CUỘN MƯỢT */
     html {
         scroll-behavior: smooth;
         /* Bù trừ khoảng 90px để header không che mất tiêu đề khi cuộn */
         scroll-padding-top: 90px; 
+    }
+
+    /* ============================================================ */
+    /* CHUYỂN CSS QUICK VIEW MODAL LÊN ĐÂY ĐỂ TRÁNH LỖI NHÁY (FOUC) */
+    /* ============================================================ */
+    .qv-modal {
+        position: fixed;
+        top: 0; left: 0; width: 100%; height: 100%;
+        z-index: 99999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none; /* Ngăn tương tác khi ẩn */
+        transition: opacity 0.3s ease, visibility 0.3s ease;
+    }
+    .qv-modal.is-open {
+        opacity: 1;
+        visibility: visible;
+        pointer-events: auto; /* Cho phép tương tác khi mở */
+    }
+    .qv-overlay {
+        position: absolute;
+        top: 0; left: 0; width: 100%; height: 100%;
+        background: rgba(0, 0, 0, 0.6);
+    }
+    .qv-dialog {
+        position: relative;
+        background: #fff;
+        width: 90%;
+        max-width: 900px;
+        border-radius: 4px;
+        overflow: hidden;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        transform: translateY(20px);
+        transition: transform 0.3s ease;
+        z-index: 1;
+    }
+    .qv-modal.is-open .qv-dialog {
+        transform: translateY(0);
+    }
+    .qv-close {
+        position: absolute;
+        top: 15px; right: 15px;
+        background: #f3f4f6;
+        border: none;
+        width: 32px; height: 32px;
+        font-size: 20px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2;
+        color: #333;
+        transition: background 0.2s;
+    }
+    .qv-close:hover { background: #e5e7eb; }
+    .qv-body {
+        display: flex;
+        flex-wrap: wrap;
+    }
+    .qv-image-wrap {
+        flex: 1 1 50%;
+        background: #f5ebdc; 
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+    }
+    .qv-image {
+        width: 100%;
+        max-height: 500px;
+        object-fit: contain;
+    }
+    .qv-info {
+        flex: 1 1 50%;
+        padding: 40px 30px;
+    }
+    .qv-category {
+        font-size: 12px;
+        color: #666;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        margin-bottom: 10px;
+        display: block;
+    }
+    .qv-title {
+        font-size: 24px;
+        font-family: serif;
+        font-weight: 700;
+        margin: 0 0 15px 0;
+        color: #222;
+    }
+    .qv-price {
+        margin-bottom: 15px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    .qv-price-current {
+        font-size: 24px;
+        font-weight: 700;
+        color: #a33a2b;
+    }
+    .qv-price-old {
+        font-size: 16px;
+        color: #999;
+        text-decoration: line-through;
+    }
+    .qv-desc {
+        font-size: 14px;
+        color: #444;
+        line-height: 1.6;
+        margin-bottom: 20px;
+    }
+    .qv-label {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.5px;
+        display: block;
+        margin-bottom: 10px;
+    }
+    .qv-size-options {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 15px;
+    }
+    .qv-size {
+        background: #fff;
+        border: 1px solid #ccc;
+        padding: 8px 12px;
+        font-size: 14px;
+        cursor: pointer;
+        text-align: center;
+        min-width: 45px;
+        transition: all 0.2s;
+    }
+    .qv-size small {
+        font-size: 10px;
+        color: #777;
+    }
+    .qv-size.active {
+        background: #111;
+        color: #fff;
+        border-color: #111;
+    }
+    .qv-size.active small { color: #ccc; }
+    .qv-size:disabled {
+        background: #f9f9f9;
+        color: #ccc;
+        cursor: not-allowed;
+        border-color: #eee;
+    }
+    .qv-stock {
+        font-size: 13px;
+        color: #2e7d32;
+        margin-bottom: 20px;
+    }
+    .qv-actions {
+        display: flex;
+        gap: 15px;
+    }
+    .qv-qty {
+        display: flex;
+        align-items: center;
+        border: 1px solid #ccc;
+        height: 45px;
+    }
+    .qv-qty-btn {
+        background: transparent;
+        border: none;
+        width: 35px;
+        font-size: 18px;
+        cursor: pointer;
+        color: #333;
+    }
+    .qv-qty-input {
+        width: 40px;
+        border: none;
+        text-align: center;
+        font-size: 16px;
+        font-weight: 600;
+        -moz-appearance: textfield;
+    }
+    .qv-qty-input::-webkit-outer-spin-button,
+    .qv-qty-input::-webkit-inner-spin-button {
+        -webkit-appearance: none; margin: 0;
+    }
+    .qv-add-to-cart {
+        flex: 1;
+        background: #111;
+        color: #fff;
+        border: none;
+        height: 45px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        letter-spacing: 0.5px;
+        transition: background 0.2s;
+    }
+    .qv-add-to-cart:hover { background: #333; }
+
+    @media (max-width: 768px) {
+        .qv-body { flex-direction: column; }
+        .qv-image-wrap { padding: 30px; }
+        .qv-info { padding: 20px; }
+        .qv-actions { flex-direction: column; }
+        .qv-qty { justify-content: space-between; }
     }
 </style>
 
@@ -81,15 +301,15 @@ try {
             </div>
             <?php if ($bannerCount > 1): ?>
             <button type="button" class="banner__arrow banner__arrow--prev" id="bannerPrev" aria-label="Ảnh trước">
-    <svg width="20" height="20" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">
-        <path d="M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z"/>
-    </svg>
-</button>
-<button type="button" class="banner__arrow banner__arrow--next" id="bannerNext" aria-label="Ảnh sau">
-    <svg width="20" height="20" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">
-        <path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/>
-    </svg>
-</button>
+                <svg width="20" height="20" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">
+                    <path d="M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z"/>
+                </svg>
+            </button>
+            <button type="button" class="banner__arrow banner__arrow--next" id="bannerNext" aria-label="Ảnh sau">
+                <svg width="20" height="20" viewBox="0 0 256 256" fill="currentColor" aria-hidden="true">
+                    <path d="M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z"/>
+                </svg>
+            </button>
             <div class="banner__dots" id="bannerDots" role="tablist" aria-label="Chọn banner"></div>
             <?php endif; ?>
         </div>
@@ -140,6 +360,12 @@ try {
             $badges[] = '<span class="pc__badge pc__badge--combo">Combo</span>';
         }
 
+        // Dữ liệu cho Quick View Modal
+        $safeName = htmlspecialchars($product['name'], ENT_QUOTES, 'UTF-8');
+        $safeImage = htmlspecialchars($product['image_url'], ENT_QUOTES, 'UTF-8');
+        $safeCat = htmlspecialchars($product['category_name'] ?? 'Thời trang', ENT_QUOTES, 'UTF-8');
+        $safeDesc = htmlspecialchars($product['description'] ?? 'Sản phẩm chất lượng cao, phong cách hiện đại, phù hợp nhiều hoàn cảnh.', ENT_QUOTES, 'UTF-8');
+
         ob_start(); ?>
         <article class="pc">
             <div class="pc__media">
@@ -160,7 +386,15 @@ try {
                             <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
                         </svg>
                     </button>
-                    <button type="button" class="pc__action" title="Xem nhanh" aria-label="Xem nhanh">
+                    <!-- NÚT XEM NHANH (ICON) -->
+                    <button type="button" class="pc__action js-quick-view" title="Xem nhanh" aria-label="Xem nhanh"
+                            data-id="<?php echo $pid; ?>"
+                            data-name="<?php echo $safeName; ?>"
+                            data-price="<?php echo $pricing['final']; ?>"
+                            data-original-price="<?php echo $pricing['original']; ?>"
+                            data-image="<?php echo $safeImage; ?>"
+                            data-category="<?php echo $safeCat; ?>"
+                            data-desc="<?php echo $safeDesc; ?>">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
                             <circle cx="12" cy="12" r="3"/>
@@ -168,14 +402,21 @@ try {
                     </button>
                 </div>
 
-                <a href="product-details.php?id=<?php echo $pid; ?>" class="pc__quick-add">
+                <!-- NÚT XEM NHANH (THAY THẾ NÚT CHỌN MUA) -->
+                <button type="button" class="pc__quick-add js-quick-view"
+                        data-id="<?php echo $pid; ?>"
+                        data-name="<?php echo $safeName; ?>"
+                        data-price="<?php echo $pricing['final']; ?>"
+                        data-original-price="<?php echo $pricing['original']; ?>"
+                        data-image="<?php echo $safeImage; ?>"
+                        data-category="<?php echo $safeCat; ?>"
+                        data-desc="<?php echo $safeDesc; ?>">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <circle cx="9" cy="21" r="1"/>
-                        <circle cx="20" cy="21" r="1"/>
-                        <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
                     </svg>
-                    Chọn mua
-                </a>
+                    Xem nhanh
+                </button>
             </div>
 
             <div class="pc__body">
@@ -358,6 +599,7 @@ try {
 
 <script src="js/chatbot.js"></script>
 <script>
+// SCRIPT CHO BANNER SLIDER
 (function () {
     var root = document.querySelector('.banner');
     if (!root) return;
@@ -420,6 +662,191 @@ try {
     render();
     start();
 })();
+
+// SCRIPT CHO QUICK VIEW MODAL
+document.addEventListener('DOMContentLoaded', function () {
+    const modal = document.getElementById('quickViewModal');
+    if (!modal) return;
+
+    const qvBtns = document.querySelectorAll('.js-quick-view');
+    const closeBtn = modal.querySelector('.qv-close');
+    const overlay = modal.querySelector('.qv-overlay');
+    
+    const qvImage = document.getElementById('qvImage');
+    const qvCategory = document.getElementById('qvCategory');
+    const qvTitle = document.getElementById('qvTitle');
+    const qvPriceCurrent = document.getElementById('qvPriceCurrent');
+    const qvPriceOld = document.getElementById('qvPriceOld');
+    const qvDesc = document.getElementById('qvDesc');
+    
+    const qvMinus = document.getElementById('qvMinus');
+    const qvPlus = document.getElementById('qvPlus');
+    const qvQty = document.getElementById('qvQty');
+    const qvAddToCart = document.getElementById('qvAddToCart');
+    
+    function formatVND(amount) {
+        return new Intl.NumberFormat('vi-VN').format(amount) + 'đ';
+    }
+
+    qvBtns.forEach(btn => {
+        btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            
+            const price = parseFloat(this.dataset.price);
+            const originalPrice = parseFloat(this.dataset.originalPrice);
+            
+            // Gán ID sản phẩm vào input ẩn để chuẩn bị thêm vào giỏ
+            document.getElementById('qvProductId').value = this.dataset.id;
+            
+            qvImage.src = this.dataset.image;
+            qvImage.alt = this.dataset.name;
+            qvCategory.textContent = this.dataset.category;
+            qvTitle.textContent = this.dataset.name;
+            qvDesc.textContent = this.dataset.desc;
+            
+            qvPriceCurrent.textContent = formatVND(price);
+            
+            if (originalPrice > price) {
+                qvPriceOld.textContent = formatVND(originalPrice);
+                qvPriceOld.style.display = 'inline-block';
+            } else {
+                qvPriceOld.style.display = 'none';
+            }
+
+            qvQty.value = 1;
+            
+            modal.classList.add('is-open');
+            modal.setAttribute('aria-hidden', 'false');
+            document.body.style.overflow = 'hidden';
+        });
+    });
+
+    function closeModal() {
+        modal.classList.remove('is-open');
+        modal.setAttribute('aria-hidden', 'true');
+        document.body.style.overflow = '';
+    }
+
+    closeBtn.addEventListener('click', closeModal);
+    overlay.addEventListener('click', closeModal);
+
+    const sizeBtns = modal.querySelectorAll('.qv-size:not(:disabled)');
+    sizeBtns.forEach(btn => {
+        btn.addEventListener('click', function() {
+            sizeBtns.forEach(b => b.classList.remove('active'));
+            this.classList.add('active');
+        });
+    });
+
+    qvMinus.addEventListener('click', function() {
+        let val = parseInt(qvQty.value) || 1;
+        if (val > 1) qvQty.value = val - 1;
+    });
+
+    qvPlus.addEventListener('click', function() {
+        let val = parseInt(qvQty.value) || 1;
+        qvQty.value = val + 1;
+    });
+
+    qvQty.addEventListener('change', function() {
+        let val = parseInt(this.value) || 1;
+        if (val < 1) this.value = 1;
+    });
+
+    // XỬ LÝ THÊM VÀO GIỎ HÀNG THỰC SỰ (GỬI FORM ẨN)
+    qvAddToCart.addEventListener('click', function() {
+        const selectedSizeBtn = modal.querySelector('.qv-size.active');
+        if (!selectedSizeBtn) {
+            alert('Vui lòng chọn size!');
+            return;
+        }
+        
+        // Lấy tên size (S, M, L, XL...) bỏ phần số lượng
+        const sizeName = selectedSizeBtn.innerHTML.split('<')[0].trim();
+        const qty = qvQty.value;
+        const productId = document.getElementById('qvProductId').value;
+        const csrfToken = document.getElementById('qvCsrfToken').value;
+
+        // Tạo form ẩn để submit dữ liệu sang cart.php
+        const form = document.createElement('form');
+        form.method = 'POST';
+        form.action = 'cart.php';
+        form.style.display = 'none';
+
+        const fields = {
+            csrf_token: csrfToken,
+            action: 'add_to_cart',
+            product_id: productId,
+            size: sizeName,
+            quantity: qty
+        };
+
+        for (const key in fields) {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = key;
+            input.value = fields[key];
+            form.appendChild(input);
+        }
+
+        document.body.appendChild(form);
+        form.submit(); // Trình duyệt sẽ tải lại trang, modal tự động biến mất
+    });
+});
 </script>
+
+<!-- ============ QUICK VIEW MODAL HTML ============ -->
+<div id="quickViewModal" class="qv-modal" aria-hidden="true">
+    <div class="qv-overlay"></div>
+    <div class="qv-dialog">
+        <button class="qv-close" aria-label="Đóng">&times;</button>
+        <div class="qv-body">
+            <!-- BỔ SUNG 2 INPUT ẨN ĐỂ CHỨA DỮ LIỆU ĐỒNG BỘ VỚI GIỎ HÀNG -->
+            <input type="hidden" id="qvProductId" value="">
+            <input type="hidden" id="qvCsrfToken" value="<?php echo $_SESSION['csrf_token']; ?>">
+            
+            <div class="qv-image-wrap">
+                <img src="" alt="" class="qv-image" id="qvImage">
+            </div>
+            <div class="qv-info">
+                <span class="qv-category" id="qvCategory">DANH MỤC</span>
+                <h2 class="qv-title" id="qvTitle">Tên sản phẩm</h2>
+                <div class="qv-price">
+                    <span class="qv-price-current" id="qvPriceCurrent">0đ</span>
+                    <span class="qv-price-old" id="qvPriceOld">0đ</span>
+                </div>
+                <p class="qv-desc" id="qvDesc">Mô tả sản phẩm...</p>
+                
+                <div class="qv-sizes">
+                    <span class="qv-label">KÍCH THƯỚC (SIZE):</span>
+                    <div class="qv-size-options">
+                        <button type="button" class="qv-size">S<br><small>(10)</small></button>
+                        <button type="button" class="qv-size active">M<br><small>(9)</small></button>
+                        <button type="button" class="qv-size">L<br><small>(10)</small></button>
+                        <button type="button" class="qv-size">XL<br><small>(10)</small></button>
+                        <button type="button" class="qv-size" disabled>2XL<br><small>Hết</small></button>
+                    </div>
+                </div>
+                
+                <div class="qv-stock">✓ Còn 9 sản phẩm size M</div>
+                
+                <div class="qv-actions">
+                    <div class="qv-qty">
+                        <button type="button" class="qv-qty-btn" id="qvMinus">-</button>
+                        <input type="number" value="1" min="1" class="qv-qty-input" id="qvQty">
+                        <button type="button" class="qv-qty-btn" id="qvPlus">+</button>
+                    </div>
+                    <button type="button" class="qv-add-to-cart" id="qvAddToCart">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/>
+                            <path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/>
+                        </svg>
+                        THÊM VÀO GIỎ HÀNG
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <?php include 'includes/footer.php'; ?>

@@ -1,10 +1,13 @@
 <?php
 /**
- * Chatbot API endpoint
+ * Chatbot API endpoint (Thư mục gốc)
  * POST JSON { message } → trả JSON { message, products, source }
  */
 
 ob_start();
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
 error_reporting(E_ALL);
 ini_set('display_errors', 0);
@@ -15,6 +18,7 @@ set_error_handler(function ($errno, $errstr, $errfile, $errline) {
     return true;
 });
 
+// Sửa lỗi khai báo đúp exception handler
 set_exception_handler(function ($e) {
     error_log('chatbot uncaught: ' . $e->getMessage());
     if (ob_get_level() > 0) ob_end_clean();
@@ -22,14 +26,26 @@ set_exception_handler(function ($e) {
         header('Content-Type: application/json; charset=utf-8');
     }
     echo json_encode([
-        'message'  => 'Xin lỗi, mình gặp sự cố khi xử lý. Bạn thử lại hoặc gọi hotline **1900 123 456** nhé.',
-        'products' => [],
+        'message'     => 'Xin lỗi, mình gặp sự cố khi xử lý. Bạn thử lại hoặc gọi hotline **1900 123 456** nhé.',
+        'products'    => [],
+        'suggestions' => [],
+        '_error'      => isset($_GET['debug']) ? $e->getMessage() : null,
     ], JSON_UNESCAPED_UNICODE);
     exit;
 });
 
-require_once 'includes/config.php';
-require_once 'includes/chatbot_helper.php';
+// 1. Nạp Config
+require_once __DIR__ . '/includes/config.php';
+
+// 2. Tự động nạp file secret nếu có trong thư mục includes/
+if (file_exists(__DIR__ . '/includes/secret.php')) {
+    require_once __DIR__ . '/includes/secret.php';
+} elseif (file_exists(__DIR__ . '/includes/secrets.php')) {
+    require_once __DIR__ . '/includes/secrets.php';
+}
+
+// 3. Nạp Helper xử lý logic chatbot
+require_once __DIR__ . '/includes/chatbot_helper.php';
 
 /* Helper phải load đủ trước khi gọi */
 if (!function_exists('chatbotReply')) {
@@ -91,7 +107,9 @@ try {
     $result = chatbotReply($pdo, $message);
 
     if (!empty($result['products']) && is_array($result['products'])) {
-        chatbotSaveProductContext($result['products']);
+        if (function_exists('chatbotSaveProductContext')) {
+            chatbotSaveProductContext($result['products']);
+        }
     }
 
     if (ob_get_level() > 0) {
@@ -102,9 +120,10 @@ try {
     }
 
     echo json_encode([
-        'message'  => $result['message']  ?? '',
-        'products' => $result['products'] ?? [],
-        '_debug'   => isset($_GET['debug']) ? [
+        'message'     => $result['message']  ?? '',
+        'products'    => $result['products'] ?? [],
+        'suggestions' => $result['suggestions'] ?? [],
+        '_debug'      => isset($_GET['debug']) ? [
             'source'     => $result['source'] ?? 'unknown',
             'complexity' => $result['complexity'] ?? null,
             'input'      => $message,

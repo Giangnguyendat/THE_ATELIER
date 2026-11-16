@@ -95,7 +95,7 @@ $adminHasPin  = !empty($adminPinHash);
 /* ============ STATUS MAP ============ */
 $returnStatusMap = [
     'pending'   => ['Chờ duyệt',       'adm-badge--orange'],
-    'approved'  => ['Đang giao hàng',  'adm-badge--blue'], // Đã duyệt, chờ hàng về
+    'approved'  => ['Đang giao hàng',  'adm-badge--blue'], 
     'refunding' => ['Đang xử lý',      'adm-badge--blue'], 
     'refunded'  => ['Đã hoàn tiền',    'adm-badge--green'],
     'rejected'  => ['Đã từ chối',      'adm-badge--red'],
@@ -229,7 +229,7 @@ $refundMethodMap = [
         </a>
         <a href="returns.php?status=approved" class="adm-stat-card <?php echo in_array($filter, ['approved','refunding'], true) ? 'adm-stat-card--active' : ''; ?>">
             <div class="adm-stat-icon" style="background:#eff6ff;color:#1d4ed8;"><i class="ph ph-truck"></i></div>
-            <div class="adm-stat-body"><div class="adm-stat-value"><?php echo number_format($totalApproved); ?></div><div class="adm-stat-label">Đang giao hàng</div></div>
+            <div class="adm-stat-body"><div class="adm-stat-value"><?php echo number_format($totalApproved); ?></div><div class="adm-stat-label">Đang xử lý / Giao hàng</div></div>
         </a>
         <a href="returns.php?status=refunded" class="adm-stat-card <?php echo $filter === 'refunded' ? 'adm-stat-card--active' : ''; ?>">
             <div class="adm-stat-icon" style="background:#f0fdf4;color:#15803d;"><i class="ph ph-check-circle"></i></div>
@@ -288,8 +288,21 @@ $refundMethodMap = [
                     <tbody>
                         <?php foreach ($returns as $r):
                             $code = !empty($r['return_code']) ? $r['return_code'] : ('RT' . date('Ymd', strtotime($r['created_at'])) . '-' . str_pad((string)$r['id'], 4, '0', STR_PAD_LEFT));
+                            
+                            // LOGIC MỚI: Tùy chỉnh trạng thái dựa trên phương thức gửi hàng
                             $stInfo = $returnStatusMap[$r['status']] ?? ['Không rõ', 'adm-badge--gray'];
-                            $canAct = in_array($r['status'], ['pending', 'approved', 'refunding'], true);
+                            if ($r['status'] === 'approved') {
+                                if (empty($r['return_type'])) {
+                                    $stInfo = ['Chờ khách gửi', 'adm-badge--orange'];
+                                } else {
+                                    $stInfo = ['Đang giao hàng', 'adm-badge--blue'];
+                                }
+                            }
+
+                            // LOGIC MỚI: Phân quyền nút
+                            $canApprove = ($r['status'] === 'pending');
+                            // Chỉ cho phép nhận hàng khi khách ĐÃ CHỌN phương thức
+                            $canReceive = (in_array($r['status'], ['approved', 'refunding'], true) && !empty($r['return_type']));
                         ?>
                             <tr>
                                 <td>
@@ -314,13 +327,16 @@ $refundMethodMap = [
                                         <button type="button" class="btn-adm btn-adm--ghost btn-view-return" data-id="<?php echo (int)$r['id']; ?>">
                                             <i class="ph ph-eye"></i> Xem
                                         </button>
-                                        <?php if ($canAct): ?>
-                                            <button type="button" class="btn-adm btn-adm--primary btn-view-return" data-id="<?php echo (int)$r['id']; ?>" data-auto-action="<?php echo $r['status'] === 'pending' ? 'approve' : 'mark_refunded'; ?>">
-                                                <?php if ($r['status'] === 'pending'): ?>
-                                                    <i class="ph ph-check"></i> Duyệt
-                                                <?php else: ?>
-                                                    <i class="ph ph-check-circle"></i> Nhận hàng & HT
-                                                <?php endif; ?>
+                                        
+                                        <?php if ($canApprove): ?>
+                                            <button type="button" class="btn-adm btn-adm--primary btn-view-return" data-id="<?php echo (int)$r['id']; ?>" data-auto-action="approve">
+                                                <i class="ph ph-check"></i> Duyệt
+                                            </button>
+                                        <?php endif; ?>
+
+                                        <?php if ($canReceive): ?>
+                                            <button type="button" class="btn-adm btn-adm--primary btn-view-return" data-id="<?php echo (int)$r['id']; ?>" data-auto-action="mark_refunded">
+                                                <i class="ph ph-check-circle"></i> Nhận hàng & HT
                                             </button>
                                         <?php endif; ?>
                                     </div>
@@ -396,7 +412,8 @@ $refundMethodMap = [
 
                 if (autoAction) {
                     setTimeout(function () {
-                        var btn = document.getElementById(autoAction === 'approve' ? 'btnActionApprove' : 'btnActionMarkRefunded');
+                        var btnId = autoAction === 'approve' ? 'btnActionApprove' : 'btnActionMarkRefunded';
+                        var btn = document.getElementById(btnId);
                         if (btn) btn.click();
                     }, 300);
                 }
@@ -428,6 +445,12 @@ $refundMethodMap = [
             'rejected':  '#b91c1c',
             'cancelled': '#57534e'
         };
+
+        // Ghi đè trạng thái cho trường hợp đã duyệt nhưng chưa có cách gửi
+        if (r.status === 'approved' && !r.return_type) {
+            statusLabels['approved'] = '<i class="ph ph-hourglass"></i> Chờ khách gửi';
+            statusColors['approved'] = '#c2410c';
+        }
 
         var html = '';
 
@@ -520,10 +543,17 @@ $refundMethodMap = [
         } else if (r.status === 'approved' || r.status === 'refunding') {
             html += '<div id="adminActionSection" style="border-top:2px solid #efeae0;padding-top:1.5rem;margin-top:1rem;">';
             html += '<div style="display:flex;align-items:center;gap:6px;font-size:0.7rem;letter-spacing:0.1em;text-transform:uppercase;color:#8a8377;font-weight:700;margin-bottom:12px;"><i class="ph ph-lightning"></i> Thao tác</div>';
-            html += '<div id="actionButtons" style="display:flex;gap:10px;flex-wrap:wrap;">';
-            html += '<button type="button" class="btn-adm btn-adm--success" id="btnActionMarkRefunded" style="padding:0.75rem 1.5rem;font-size:0.88rem;"><i class="ph ph-check-circle"></i> Đã nhận được hàng & Hoàn tiền</button>';
-            html += '</div>';
-            html += '<div id="actionConfirmBox" style="display:none;"></div>';
+            
+            if (r.status === 'approved' && !r.return_type) {
+                html += '<div style="color:#c2410c; font-size:0.85rem; padding: 12px 16px; background:#fff7ed; border-radius:8px; border:1px solid #fed7aa; display:flex; align-items:center; gap:8px;">';
+                html += '<i class="ph ph-info" style="font-size:1.2rem;"></i> Đã duyệt. Đang chờ khách hàng chọn phương thức gửi hàng về Shop...';
+                html += '</div>';
+            } else {
+                html += '<div id="actionButtons" style="display:flex;gap:10px;flex-wrap:wrap;">';
+                html += '<button type="button" class="btn-adm btn-adm--success" id="btnActionMarkRefunded" style="padding:0.75rem 1.5rem;font-size:0.88rem;"><i class="ph ph-check-circle"></i> Đã nhận được hàng & Hoàn tiền</button>';
+                html += '</div>';
+                html += '<div id="actionConfirmBox" style="display:none;"></div>';
+            }
             html += '</div>';
         }
 
@@ -547,7 +577,7 @@ $refundMethodMap = [
         }
 
         var actionLabels = {
-            'approve':        { title: '<i class="ph ph-check"></i> Xác nhận duyệt đơn hoàn', color: '#166534', note: 'Lúc này tiền CHƯA được hoàn. Đơn sẽ chuyển sang trạng thái "Đang giao hàng". Khi hàng hoàn về tới shop, bạn mới bấm hoàn tiền cho khách.' },
+            'approve':        { title: '<i class="ph ph-check"></i> Xác nhận duyệt đơn hoàn', color: '#166534', note: 'Đơn sẽ chuyển sang trạng thái "Chờ khách gửi hàng". Khách sẽ nhận được thông báo để chọn phương thức gửi hàng về Shop.' },
             'reject':         { title: '<i class="ph ph-x-circle"></i> Xác nhận từ chối', color: '#b91c1c', note: 'Khách sẽ nhận được thông báo từ chối qua email.' },
             'mark_refunded':  { title: '<i class="ph ph-check-circle"></i> Xác nhận đã nhận hàng & Hoàn tiền', color: '#166534', note: 'Bạn xác nhận đã nhận được gói hàng hoàn trả. Hệ thống sẽ TIẾN HÀNH HOÀN TIỀN ngay bây giờ.' }
         };

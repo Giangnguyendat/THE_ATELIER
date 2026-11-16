@@ -193,6 +193,20 @@ unset($_SESSION['flash_message']);
 ?>
 <?php include 'includes/header.php'; ?>
 
+<style>
+    /* CSS CHO ICON SVG ĐỒNG BỘ */
+    .icon-svg {
+        display: inline-block;
+        vertical-align: middle;
+    }
+    .empty-icon svg {
+        width: 80px;
+        height: 80px;
+        color: #9ca3af;
+        margin-bottom: 16px;
+    }
+</style>
+
 <main class="cart-page-wrapper">
     <div class="cart-container">
 
@@ -222,7 +236,10 @@ unset($_SESSION['flash_message']);
 
         <?php if (empty($cart)): ?>
             <div class="cart-empty-state">
-                <div class="empty-icon">&#128722;</div>
+                <!-- Icon Giỏ Hàng Trống (SVG) -->
+                <div class="empty-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+                </div>
                 <h2>Chưa có sản phẩm nào</h2>
                 <p>Khám phá các sản phẩm tuyệt vời của chúng tôi và thêm vào giỏ hàng nhé!</p>
                 <a href="products.php" class="btn-continue-shopping">Tiếp tục mua sắm</a>
@@ -380,9 +397,11 @@ unset($_SESSION['flash_message']);
                     <p style="margin:0;color:#374151;">Số lượng trong giỏ: <strong id="modalCartProductQty" style="color:#111827;">1</strong></p>
                 </div>
                 <div style="display:flex;gap:12px;margin-top:20px;">
+                    <!-- Nút Xóa (Có Icon SVG Thùng Rác) -->
                     <button type="button" id="modalDeleteBtn" class="btn-remove-from-cart"
-                            style="flex:1;background:#ef4444;color:#fff;border:none;padding:14px 20px;border-radius:8px;font-weight:600;cursor:pointer;">
-                        &#128465; Xóa khỏi giỏ hàng
+                            style="flex:1;background:#ef4444;color:#fff;border:none;padding:14px 20px;border-radius:8px;font-weight:600;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;">
+                        <svg class="icon-svg" style="width:18px;height:18px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>
+                        Xóa khỏi giỏ hàng
                     </button>
                     <a id="modalDetailLink" href="#" class="btn-view-full"
                        style="display:inline-flex;align-items:center;justify-content:center;background:#f3f4f6;color:#374151;text-decoration:none;padding:14px 20px;border-radius:8px;font-weight:600;">

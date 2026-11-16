@@ -149,3 +149,4 @@ $_SESSION[$sessionKey] = true;
 }
 
 echo json_encode(['ok' => false, 'msg' => 'Action không hợp lệ.']);
+/** @var PDO $pdo */  // <-- Thêm dòng này để Intelephense hiểu $pdo là biến toàn cục

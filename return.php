@@ -25,24 +25,10 @@ if (!$order) {
     exit;
 }
 
-if ($order['status'] !== 'delivered') {
-    $_SESSION['flash_error'] = 'Chỉ có thể trả hàng với đơn đã giao thành công.';
-    header('Location: account.php');
-    exit;
-}
-
-// Thời hạn 7 ngày
-$deliveredTime = strtotime($order['delivered_at'] ?? $order['updated_at'] ?? $order['created_at']);
-$daysLeft      = 7 - floor((time() - $deliveredTime) / 86400);
-if ($daysLeft <= 0) {
-    $_SESSION['flash_error'] = 'Đã quá thời hạn trả hàng (7 ngày kể từ khi giao).';
-    header('Location: account.php');
-    exit;
-}
-
-// Check request active
+// 1. LẤY YÊU CẦU TRẢ HÀNG (NẾU CÓ)
 $stmt = $pdo->prepare("
-    SELECT id, return_code, status, created_at FROM return_requests
+    SELECT id, return_code, status, created_at, return_type, carrier, reason, reason_detail, refund_method, refund_bank_id 
+    FROM return_requests
     WHERE order_id = ? AND status IN ('pending','approved','refunding')
     ORDER BY created_at DESC LIMIT 1
 ");
@@ -50,7 +36,47 @@ $stmt->execute([$orderId]);
 $existing = $stmt->fetch(PDO::FETCH_ASSOC);
 $isExisting = !empty($existing);
 
-// Lấy items
+$existingStatus  = $existing['status'] ?? '';
+$existingType    = $existing['return_type'] ?? null;
+$existingCarrier = $existing['carrier'] ?? 'SPX';
+
+// 2. NẾU CHƯA CÓ YÊU CẦU -> KIỂM TRA ĐIỀU KIỆN TẠO MỚI
+if (!$isExisting) {
+    if ($order['status'] !== 'delivered') {
+        $_SESSION['flash_error'] = 'Chỉ có thể trả hàng với đơn đã giao thành công.';
+        header('Location: account.php');
+        exit;
+    }
+    $deliveredTime = strtotime($order['delivered_at'] ?? $order['updated_at'] ?? $order['created_at']);
+    $daysLeft      = 7 - floor((time() - $deliveredTime) / 86400);
+    if ($daysLeft <= 0) {
+        $_SESSION['flash_error'] = 'Đã quá thời hạn trả hàng (7 ngày kể từ khi giao).';
+        header('Location: account.php');
+        exit;
+    }
+}
+
+/* ============================================================
+   XỬ LÝ KHI KHÁCH CHỌN PHƯƠNG THỨC GỬI HÀNG (SAU KHI ĐÃ DUYỆT)
+   ============================================================ */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save_return_method') {
+    $returnId = (int)($_POST['return_id'] ?? 0);
+    $rType    = $_POST['return_type'] ?? '';
+    $carrier  = $_POST['carrier'] ?? 'SPX';
+
+    if (in_array($rType, ['self', 'shipping'])) {
+        $stmt = $pdo->prepare("SELECT id FROM return_requests WHERE id = ? AND user_id = ? AND status = 'approved'");
+        $stmt->execute([$returnId, $userId]);
+        if ($stmt->fetch()) {
+            $stmt = $pdo->prepare("UPDATE return_requests SET return_type = ?, carrier = ? WHERE id = ?");
+            $stmt->execute([$rType, $carrier, $returnId]);
+            header("Location: return.php?order_id=$orderId");
+            exit;
+        }
+    }
+}
+
+// Lấy items của đơn gốc
 $stmt = $pdo->prepare("
     SELECT oi.*, p.name, p.image_url
     FROM order_items oi
@@ -60,12 +86,40 @@ $stmt = $pdo->prepare("
 $stmt->execute([$orderId]);
 $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Linked banks
-$stmt = $pdo->prepare("
-    SELECT id, bank_name, account_no, account_name, is_default
-    FROM linked_banks WHERE user_id = ?
-    ORDER BY is_default DESC, id DESC
-");
+// Lấy chi tiết những món khách đã chọn trả (nếu có đơn hoàn)
+$returnItems = [];
+$returnImages = [];
+$bankInfo = null;
+
+if ($isExisting) {
+    // Lấy sản phẩm đã chọn trả
+    try {
+        $stmt = $pdo->prepare("SELECT order_item_id, quantity FROM return_items WHERE return_id = ?");
+        $stmt->execute([$existing['id']]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $ri) {
+            $returnItems[$ri['order_item_id']] = (int)$ri['quantity'];
+        }
+    } catch (Exception $e) {}
+
+    // Lấy ảnh minh chứng
+    try {
+        $stmt = $pdo->prepare("SELECT image_path FROM return_images WHERE return_id = ?");
+        $stmt->execute([$existing['id']]);
+        $returnImages = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    } catch (Exception $e) {}
+
+    // Lấy thông tin ngân hàng nếu hoàn qua bank
+    if ($existing['refund_method'] === 'bank' && !empty($existing['refund_bank_id'])) {
+        try {
+            $stmt = $pdo->prepare("SELECT bank_name, account_no FROM linked_banks WHERE id = ?");
+            $stmt->execute([$existing['refund_bank_id']]);
+            $bankInfo = $stmt->fetch(PDO::FETCH_ASSOC);
+        } catch (Exception $e) {}
+    }
+}
+
+// Linked banks cho form tạo mới
+$stmt = $pdo->prepare("SELECT id, bank_name, account_no, account_name, is_default FROM linked_banks WHERE user_id = ? ORDER BY is_default DESC, id DESC");
 $stmt->execute([$userId]);
 $banks = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -99,137 +153,124 @@ try {
     if (!empty($footerData['address'])) $shopAddress = $footerData['address'];
     if (!empty($footerData['phone'])) $shopPhone = $footerData['phone'];
 } catch (Exception $e) {}
+
+// ============================================================
+// CHUẨN BỊ DỮ LIỆU VẬN ĐƠN (NẾU ĐÃ CHỌN GỬI BƯU ĐIỆN)
+// ============================================================
+$trackingNo = '';
+$logoName = 'Shopee'; $logoMain = 'SPX'; $logoSub = 'EXPRESS'; $logoColor = '#ee4d2d'; $logoIcon = 'S';
+
+if ($isExisting && $existingType === 'shipping') {
+    $prefix = $existingCarrier === 'SPX' ? 'SPXVN' : ($existingCarrier === 'GHN' ? 'GHN' : ($existingCarrier === 'VIETTEL' ? 'VTP' : 'GHTK'));
+    $numbersOnly = preg_replace('/\D/', '', $existing['return_code']);
+    if (empty($numbersOnly)) $numbersOnly = '00000000';
+    $trackingNo = $prefix . $numbersOnly;
+
+    if ($existingCarrier === 'GHN') {
+        $logoName = 'Giao Hàng'; $logoMain = 'GHN'; $logoSub = 'NHANH'; $logoColor = '#0055aa'; $logoIcon = 'G';
+    } elseif ($existingCarrier === 'VIETTEL') {
+        $logoName = 'Viettel'; $logoMain = 'VTP'; $logoSub = 'POST'; $logoColor = '#d32f2f'; $logoIcon = 'V';
+    } elseif ($existingCarrier === 'GHTK') {
+        $logoName = 'Giao Hàng'; $logoMain = 'GHTK'; $logoSub = 'TIẾT KIỆM'; $logoColor = '#008844'; $logoIcon = 'G';
+    }
+}
 ?>
 <?php include 'includes/header.php'; ?>
 
 <style>
     .return-page { padding: 40px 0; background: #f8f9fa; min-height: 80vh; }
-    
-    /* Layout 2 cột */
-    .return-layout { 
-        display: grid; 
-        grid-template-columns: 1fr 400px; 
-        gap: 24px; 
-        align-items: start; 
-        max-width: 1200px; 
-        margin: 0 auto; 
-    }
-
-    .return-card {
-        background: #fff; border-radius: 12px; padding: 1.5rem 2rem;
-        box-shadow: 0 4px 15px rgba(0,0,0,0.04); border: 1px solid #efeae0;
-    }
-    
+    .return-layout { display: grid; grid-template-columns: 1fr 400px; gap: 24px; align-items: start; max-width: 1200px; margin: 0 auto; }
+    .return-card { background: #fff; border-radius: 12px; padding: 1.5rem 2rem; box-shadow: 0 4px 15px rgba(0,0,0,0.04); border: 1px solid #efeae0; }
     .sticky-sidebar { position: sticky; top: 20px; }
-
     .return-section { margin-bottom: 2rem; }
-    .return-section h3 {
-        font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;
-        color: #8a8377; margin: 0 0 0.75rem; font-weight: 700;
-    }
-
-    /* Item chọn trả */
-    .return-item {
-        display: flex; align-items: center; gap: 1rem; padding: 0.85rem;
-        border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 0.6rem;
-        transition: all 0.2s; cursor: pointer;
-    }
+    .return-section h3 { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em; color: #8a8377; margin: 0 0 0.75rem; font-weight: 700; display: flex; align-items: center; gap: 6px; }
+    .return-section h3 i { font-size: 1.1rem; }
+    .return-item { display: flex; align-items: center; gap: 1rem; padding: 0.85rem; border: 1px solid #e5e7eb; border-radius: 8px; margin-bottom: 0.6rem; transition: all 0.2s; cursor: pointer; }
     .return-item.selected { border-color: #a8461f; background: #fdf7f3; }
     .return-item input[type=checkbox] { transform: scale(1.3); accent-color: #a8461f; cursor: pointer; }
     .return-item img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; }
     .return-item .info { flex: 1; }
     .return-item .info .name { font-weight: 600; font-size: 0.9rem; color: #1c1b19; }
     .return-item .info .meta { font-size: 0.78rem; color: #6b7280; margin-top: 2px; }
-    .return-item .qty-input {
-        width: 60px; padding: 6px 8px; border: 1px solid #d1d5db;
-        border-radius: 6px; font-size: 0.85rem; text-align: center;
-    }
-
-    /* Lựa chọn phương thức */
-    .method-box {
-        display: block; padding: 1rem; border: 2px solid #e5e7eb;
-        border-radius: 10px; cursor: pointer; margin-bottom: 0.75rem;
-        transition: all 0.2s; background: #fff;
-    }
+    .return-item .qty-input { width: 60px; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.85rem; text-align: center; }
+    .method-box { display: block; padding: 1rem; border: 2px solid #e5e7eb; border-radius: 10px; cursor: pointer; margin-bottom: 0.75rem; transition: all 0.2s; background: #fff; }
     .method-box:hover { border-color: #a8461f55; }
     .method-box.selected { border-color: #a8461f; background: #fdf7f3; }
     .method-box input[type=radio] { accent-color: #a8461f; margin-right: 0.6rem; transform: scale(1.2); }
-    
-    /* PIN */
-    #returnPin {
-        width: 100%; padding: 14px 18px; border: 2px solid #d1d5db; border-radius: 10px;
-        font-size: 1.5rem; letter-spacing: 0.5em; text-align: center;
-        font-family: 'IBM Plex Mono', monospace; background: #fff;
-    }
+    .method-box b { display: flex; align-items: center; gap: 6px; font-size: 0.95rem; }
+    #returnPin { width: 100%; padding: 14px 18px; border: 2px solid #d1d5db; border-radius: 10px; font-size: 1.5rem; letter-spacing: 0.5em; text-align: center; font-family: 'IBM Plex Mono', monospace; background: #fff; }
     #returnPin:focus { outline: none; border-color: #a8461f; box-shadow: 0 0 0 3px rgba(168,70,31,0.12); }
-    #returnPin.error { border-color: #dc2626; animation: shakePin 0.35s; }
-    @keyframes shakePin { 0%,100% { transform: translateX(0); } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
-
-    /* Image Uploader */
     .uploader-wrap { background: #faf8f4; border: 1px solid #efeae0; border-radius: 12px; padding: 1.25rem; }
-    .dropzone {
-        position: relative; border: 2px dashed #d1d5db; border-radius: 12px;
-        padding: 2rem 1rem; text-align: center; cursor: pointer; background: #fff; transition: all 0.2s;
-    }
+    .dropzone { position: relative; border: 2px dashed #d1d5db; border-radius: 12px; padding: 2rem 1rem; text-align: center; cursor: pointer; background: #fff; transition: all 0.2s; }
     .dropzone:hover, .dropzone.dragover { border-color: #a8461f; background: #fdf7f3; }
     .dropzone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
     .uploader-preview { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 0.75rem; margin-top: 1rem; }
     .preview-card { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; border: 1px solid #e5e7eb; }
     .preview-card img { width: 100%; height: 100%; object-fit: cover; }
     .preview-remove { position: absolute; top: 4px; right: 4px; width: 22px; height: 22px; border-radius: 50%; background: rgba(185,28,28,0.9); color: #fff; border: none; cursor: pointer; font-size: 14px; display: flex; align-items: center; justify-content: center; }
-
-    /* Trạng thái khóa (phải chọn phương thức) */
-    .submit-btn { width: 100%; padding: 14px; border: none; border-radius: 8px; font-weight: 700; font-size: 1rem; transition: all 0.2s; }
+    .submit-btn { width: 100%; padding: 14px; border: none; border-radius: 8px; font-weight: 700; font-size: 1rem; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+    .submit-btn i { font-size: 1.2rem; }
     .submit-btn:disabled { background: #e5e7eb !important; color: #9ca3af !important; cursor: not-allowed; box-shadow: none !important; }
     .submit-btn:not(:disabled) { background: #a8461f; color: #fff; cursor: pointer; box-shadow: 0 4px 12px rgba(168,70,31,0.3); }
     .submit-btn:not(:disabled):hover { background: #8f3a18; transform: translateY(-1px); }
+    
+    .btn-print { background: #166534; color: #fff; padding: 10px 20px; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 0.95rem; transition: all 0.2s; box-shadow: 0 2px 8px rgba(22, 101, 52, 0.25); width: 100%;}
+    .btn-print:hover { background: #15803d; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(22, 101, 52, 0.35); }
+    .btn-print i { font-size: 1.2rem; }
+    .btn-adm { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 10px 20px; border-radius: 8px; font-weight: 700; text-decoration: none; font-size: 0.95rem; transition: 0.2s; cursor: pointer; border: 1px solid #d1d5db; background: #fff; color: #374151; }
+    .btn-adm:hover { background: #f3f4f6; }
 
-    /* ============================================================
-       WAYBILL (MÃ VẬN ĐƠN) - Y HỆT BÊN ADMIN
-       ============================================================ */
-    .waybill-wrap { 
-        background: #fff; padding: 15px; border: 1px solid #ccc; 
-        margin-top: 20px; display: none; max-width: 500px; 
-        box-sizing: border-box; margin-left: auto; margin-right: auto;
-    }
-    
-    .wb-label { 
-        border: 2px solid #000; padding: 15px; font-family: Arial, Helvetica, sans-serif; 
-        color: #000; background: #fff; position: relative; width: 100%; box-sizing: border-box; 
-    }
-    
-    .wb-header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 10px; }
-    .wb-logo { font-size: 28px; font-weight: 900; color: #ee4d2d; text-transform: uppercase; line-height: 1; flex-shrink: 0; }
-    .wb-barcode { text-align: center; display: flex; flex-direction: column; align-items: center; flex: 1; padding-left: 15px; }
-    .wb-barcode img { width: 100%; max-width: 280px; height: 40px; object-fit: contain; }
-    .wb-tracking-no { font-size: 14px; font-weight: bold; margin-top: 4px; letter-spacing: 0.5px; }
-    
-    .wb-cols { display: flex; border-bottom: 1px dashed #000; padding-bottom: 10px; margin-bottom: 10px; gap: 10px; }
-    .wb-col { flex: 1; font-size: 12px; line-height: 1.4; word-break: break-word; }
-    .wb-col:first-child { border-right: 1px dashed #000; padding-right: 10px; }
-    
-    .wb-sort-code { text-align: center; font-size: 22px; font-weight: bold; border-bottom: 1px solid #000; padding: 8px 0; margin-bottom: 10px; letter-spacing: 2px; }
-    
-    .wb-body { display: flex; border-bottom: 1px dashed #000; padding-bottom: 10px; margin-bottom: 10px; gap: 10px; }
-    .wb-items { flex: 1; font-size: 12px; line-height: 1.4; padding-right: 10px; border-right: 1px dashed #000; }
-    .wb-qr { width: 110px; text-align: center; flex-shrink: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-    .wb-qr img { width: 100px; height: 100px; object-fit: contain; }
-    .wb-qr-code { font-size: 11px; font-weight: bold; margin-top: 4px; word-break: break-all; }
-    
-    .wb-footer { display: flex; justify-content: space-between; align-items: flex-end; }
-    .wb-sign { border: 1px solid #000; padding: 5px 10px; font-size: 10px; text-align: center; min-width: 120px; }
-    
-    .btn-print { background: #166534; color: #fff; padding: 10px 20px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; }
-    .btn-print:hover { background: #15803d; }
+    /* Style riêng cho form bị khóa (Readonly) */
+    .form-readonly input, .form-readonly select, .form-readonly textarea, .form-readonly .dropzone { pointer-events: none; background-color: #f9fafb; opacity: 0.8; }
+    .form-readonly .method-box { pointer-events: none; opacity: 0.8; }
+    .form-readonly .return-item input[type=checkbox] { opacity: 1; }
+
+    /* ============ Waybill SPX Style (Thu gọn cho Sidebar) ============ */
+    .waybill-wrap { background: #fff; padding: 10px; border: 1px dashed #2563eb; display: none; box-sizing: border-box; width: 100%; margin-bottom: 1rem;}
+    .waybill-wrap.show { display: block; }
+    .wb-label { border: 2px solid #000; padding: 10px; font-family: Arial, Helvetica, sans-serif; color: #000; background: #fff; position: relative; width: 100%; box-sizing: border-box; font-size: 10px; }
+    .wb-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+    .wb-logo-area { display: flex; flex-direction: column; align-items: flex-start; }
+    .wb-barcode-area { text-align: right; display: flex; flex-direction: column; align-items: flex-end; width: 150px; }
+    .wb-barcode-area img { height: 35px !important; width: 100% !important; object-fit: fill; }
+    .wb-tracking-text { font-size: 10px; margin-top: 2px; font-family: monospace; }
+    .wb-tracking-text span { font-weight: bold; }
+    .wb-dashed { border-top: 1px dashed #000; margin: 6px 0; width: 100%; }
+    .wb-addresses { display: flex; gap: 6px; }
+    .wb-col-left { flex: 1; border-right: 1px dashed #000; padding-right: 6px; }
+    .wb-col-right { flex: 1.2; }
+    .wb-addr-title { font-weight: bold; font-size: 10px; margin-bottom: 2px; }
+    .wb-addr-content { font-size: 10px; line-height: 1.3; word-break: break-word; }
+    .wb-sorting { display: flex; border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 4px 0; align-items: center; justify-content: space-between; }
+    .wb-sort-code { flex: 1.2; font-size: 13px; font-weight: bold; font-family: monospace; letter-spacing: 0.5px; padding-left: 4px; white-space: nowrap; }
+    .wb-sort-dest { flex: 1; font-size: 12px; font-weight: bold; text-align: center; border-left: 1px dashed #000; text-transform: uppercase; white-space: nowrap; }
+    .wb-body { display: flex; padding: 6px 0; }
+    .wb-items { flex: 1; font-size: 10px; line-height: 1.3; padding-right: 6px; border-right: 1px dashed #000; display: flex; flex-direction: column; }
+    .wb-qr-area { width: 90px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; padding-left: 6px; }
+    .wb-qr-area img { width: 70px; height: 70px; object-fit: contain; }
+    .wb-qr-sub { font-size: 11px; font-weight: bold; margin-top: 2px; font-family: monospace; }
+    .wb-date-text { font-size: 10px; font-weight: bold; margin-top: 2px; text-align: center; }
+    .wb-footer { display: flex; border-top: 1px dashed #000; padding-top: 6px; }
+    .wb-footer-left { flex: 1.2; border-right: 1px dashed #000; padding-right: 6px; }
+    .wb-cod-title { font-size: 10px; }
+    .wb-cod-amount { font-size: 16px; font-weight: bold; margin: 2px 0; font-family: Arial, sans-serif; }
+    .wb-weight { font-size: 10px; text-align: right; font-weight: bold; margin-top: 2px; }
+    .wb-footer-right { flex: 0.8; padding-left: 6px; display: flex; align-items: center; justify-content: center; }
+    .wb-sign-box { border: 1px solid #000; padding: 4px; text-align: center; font-size: 9px; width: 100%; height: 60px; display: flex; flex-direction: column; justify-content: space-between; }
+    .wb-sign-title { font-weight: bold; font-size: 10px; }
+    .wb-instructions { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 6px; font-size: 9px; }
+    .wb-guide-text { font-weight: bold; font-size: 10px; }
+    .wb-return-text { text-align: right; font-size: 8px; line-height: 1.1; }
+    .wb-hotline { text-align: center; color: #ee4d2d; font-weight: bold; font-size: 10px; margin-top: 6px; border-top: 1px solid #000; padding-top: 4px; }
 
     @media print {
         body * { visibility: hidden; }
         #returnWaybillSection, #returnWaybillSection * { visibility: visible; }
-        #returnWaybillSection { position: absolute; left: 0; top: 0; width: 100%; padding: 0; margin: 0; }
-        .waybill-wrap { border: none; max-width: 100%; padding: 0; }
+        #returnWaybillSection { position: absolute; left: 0; top: 0; width: 100%; padding: 0; margin: 0; border: none; }
+        .waybill-wrap { border: none; max-width: 100%; padding: 0; margin: 0; }
+        .wb-label { border: 2px solid #000; page-break-inside: avoid; }
         .no-print { display: none !important; }
     }
-
     @media (max-width: 992px) {
         .return-layout { grid-template-columns: 1fr; }
         .sticky-sidebar { position: static; }
@@ -238,43 +279,35 @@ try {
 
 <main class="return-page">
     <div style="max-width:1200px; margin:0 auto 20px; padding:0 15px;" class="no-print">
-        <a href="account.php" style="color:#6b7280;text-decoration:none;font-size:14px;">← Quay lại tài khoản</a>
+        <a href="account.php" style="color:#6b7280;text-decoration:none;font-size:14px; display:inline-flex; align-items:center; gap:4px;">
+            <i class="ph ph-arrow-left"></i> Quay lại tài khoản
+        </a>
     </div>
 
     <div style="padding: 0 15px;" class="no-print">
         <div class="return-layout" id="mainLayout">
             
-            <!-- CỘT TRÁI: FORM ĐIỀN THÔNG TIN -->
-            <div class="return-card">
-                <h1 style="margin:0 0 0.5rem;font-size:1.5rem;font-weight:700;color:#1c1b19;">
-                    🔄 Yêu cầu trả hàng / Hoàn tiền
+            <!-- CỘT TRÁI: THÔNG TIN CHI TIẾT ĐƠN TRẢ HÀNG -->
+            <div class="return-card <?php echo $isExisting ? 'form-readonly' : ''; ?>">
+                <h1 style="margin:0 0 0.5rem;font-size:1.5rem;font-weight:700;color:#1c1b19; display:flex; align-items:center; gap:8px;">
+                    <i class="ph ph-arrows-counter-clockwise" style="color:#a8461f;"></i> Yêu cầu trả hàng / Hoàn tiền
                 </h1>
                 <p style="color:#6b7280;font-size:0.9rem;margin:0 0 1.5rem;">
-                    Đơn hàng <b>#<?php echo (int)$order['id']; ?></b> · Còn <b style="color:#a8461f;"><?php echo $daysLeft; ?> ngày</b> để trả hàng.
+                    Đơn hàng <b>#<?php echo (int)$order['id']; ?></b> 
+                    <?php if (!$isExisting): ?>· Còn <b style="color:#a8461f;"><?php echo $daysLeft; ?> ngày</b> để trả hàng.<?php endif; ?>
                 </p>
 
-                <!-- THÔNG BÁO LỖI & NÚT IN LẠI MÃ VẬN ĐƠN -->
                 <?php if (isset($_SESSION['flash_error'])): ?>
-                    <div style="background:#fef2f2;border:1px solid #fecaca;color:#991b1b;padding:12px 16px;border-radius:8px;margin-bottom:1.5rem;font-size:0.9rem;">
+                    <div style="background:#fef2f2;border:1px solid #fecaca;color:#991b1b;padding:12px 16px;border-radius:8px;margin-bottom:1.5rem;font-size:0.9rem; display:flex; align-items:center; gap:8px;">
+                        <i class="ph-fill ph-warning-circle" style="font-size:1.2rem;"></i>
                         <?php echo sanitize($_SESSION['flash_error']); unset($_SESSION['flash_error']); ?>
                     </div>
                 <?php endif; ?>
 
-                <?php if ($isExisting): ?>
-                    <div style="display: flex; align-items: center; justify-content: space-between; background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 12px 16px; border-radius: 8px; margin-bottom: 1.5rem; flex-wrap: wrap; gap: 10px;">
-                        <div>
-                            <strong>Đơn hàng này đã có yêu cầu trả hàng đang xử lý.</strong><br>
-                            <span style="font-size: 0.85rem;">Mã yêu cầu: <?= htmlspecialchars($existing['return_code']) ?></span>
-                        </div>
-                        <button type="button" class="btn-print" onclick="printExistingWaybill('<?= htmlspecialchars($existing['return_code']) ?>')" style="margin: 0;">
-                            🖨️ In lại mã vận đơn
-                        </button>
-                    </div>
-                <?php endif; ?>
-
                 <?php if (!$hasPin && !$isExisting): ?>
-                    <div style="background:#fef3c7;border:1px solid #fde68a;color:#92400e;padding:14px 16px;border-radius:10px;margin-bottom:1.5rem;font-size:0.9rem;">
-                        ⚠️ Bạn chưa thiết lập <b>mã PIN</b>. Vui lòng vào <a href="wallet.php" style="color:#a8461f;font-weight:700;">Ví Atelier Pay</a> để thiết lập.
+                    <div style="background:#fef3c7;border:1px solid #fde68a;color:#92400e;padding:14px 16px;border-radius:10px;margin-bottom:1.5rem;font-size:0.9rem; display:flex; align-items:flex-start; gap:8px;">
+                        <i class="ph-fill ph-warning" style="font-size:1.2rem; margin-top:2px;"></i>
+                        <div>Bạn chưa thiết lập <b>mã PIN</b>. Vui lòng vào <a href="wallet.php" style="color:#a8461f;font-weight:700; text-decoration:underline;">Ví Atelier Pay</a> để thiết lập.</div>
                     </div>
                 <?php endif; ?>
 
@@ -284,13 +317,13 @@ try {
 
                     <!-- 1. SẢN PHẨM -->
                     <div class="return-section">
-                        <h3>1. Chọn sản phẩm muốn trả *</h3>
-                        <?php foreach ($items as $it): ?>
-                            <label class="return-item <?= $isExisting ? 'disabled' : '' ?>">
-                                <input type="checkbox" class="item-check" name="items[]"
-                                       value="<?php echo (int)$it['id']; ?>"
-                                       data-price="<?php echo (float)$it['price']; ?>"
-                                       <?= $isExisting ? 'disabled' : '' ?>>
+                        <h3>1. Sản phẩm trả hàng *</h3>
+                        <?php foreach ($items as $it): 
+                            $isSelected = $isExisting && (empty($returnItems) || isset($returnItems[$it['id']]));
+                            $selQty = ($isExisting && isset($returnItems[$it['id']])) ? $returnItems[$it['id']] : 1;
+                        ?>
+                            <label class="return-item <?php echo $isSelected ? 'selected' : ''; ?>">
+                                <input type="checkbox" class="item-check" name="items[]" value="<?php echo (int)$it['id']; ?>" data-price="<?php echo (float)$it['price']; ?>" <?php echo $isSelected ? 'checked' : ''; ?> <?php echo $isExisting ? 'disabled' : ''; ?>>
                                 <img src="<?php echo sanitize($it['image_url']); ?>" alt="">
                                 <div class="info">
                                     <div class="name"><?php echo sanitize($it['name']); ?></div>
@@ -301,8 +334,7 @@ try {
                                 </div>
                                 <div style="text-align:center;">
                                     <div style="font-size:0.7rem;color:#6b7280;margin-bottom:4px;">SL trả</div>
-                                    <input type="number" class="qty-input item-qty" name="qty[<?php echo (int)$it['id']; ?>]"
-                                           value="1" min="1" max="<?php echo (int)$it['quantity']; ?>" disabled>
+                                    <input type="number" class="qty-input item-qty" name="qty[<?php echo (int)$it['id']; ?>]" value="<?php echo $selQty; ?>" min="1" max="<?php echo (int)$it['quantity']; ?>" <?php echo $isSelected ? '' : 'disabled'; ?>>
                                 </div>
                             </label>
                         <?php endforeach; ?>
@@ -311,212 +343,290 @@ try {
                     <!-- 2. LÝ DO -->
                     <div class="return-section">
                         <h3>2. Lý do trả hàng *</h3>
-                        <select name="reason" id="returnReason" required style="width:100%;padding:11px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:0.9rem;background:#fff;" <?= $isExisting ? 'disabled' : '' ?>>
+                        <select name="reason" id="returnReason" required style="width:100%;padding:11px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:0.9rem;background:#fff;" <?php echo $isExisting ? 'disabled' : ''; ?>>
                             <option value="">-- Chọn lý do --</option>
                             <?php foreach ($reasons as $r): ?>
-                                <option value="<?php echo htmlspecialchars($r, ENT_QUOTES); ?>"><?php echo $r; ?></option>
+                                <option value="<?php echo htmlspecialchars($r, ENT_QUOTES); ?>" <?php echo ($isExisting && $existing['reason'] === $r) ? 'selected' : ''; ?>><?php echo $r; ?></option>
                             <?php endforeach; ?>
                         </select>
-                        <div id="reasonOtherGroup" hidden style="margin-top:0.75rem;">
-                            <textarea name="reason_detail" id="reasonDetail" rows="3" maxlength="500" placeholder="Mô tả chi tiết..." style="width:100%;padding:11px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:0.9rem;resize:vertical;box-sizing:border-box;" <?= $isExisting ? 'disabled' : '' ?>></textarea>
+                        <div id="reasonOtherGroup" <?php echo ($isExisting && $existing['reason'] === 'Khác') ? '' : 'hidden'; ?> style="margin-top:0.75rem;">
+                            <textarea name="reason_detail" id="reasonDetail" rows="3" maxlength="500" placeholder="Mô tả chi tiết..." style="width:100%;padding:11px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:0.9rem;resize:vertical;box-sizing:border-box;" <?php echo $isExisting ? 'disabled' : ''; ?>><?php echo $isExisting ? htmlspecialchars($existing['reason_detail']) : ''; ?></textarea>
                         </div>
                     </div>
 
                     <!-- 3. ẢNH -->
                     <div class="return-section">
                         <h3>3. Ảnh sản phẩm thực tế *</h3>
-                        <div class="uploader-wrap <?= $isExisting ? 'disabled' : '' ?>">
-                            <div class="dropzone" id="dropzone" <?= $isExisting ? 'style="pointer-events:none;opacity:0.6;"' : '' ?>>
-                                <input type="file" id="returnImages" name="images[]" accept="image/*" multiple <?= $isExisting ? 'disabled' : '' ?>>
-                                <div style="font-size:2rem;color:#a8461f;margin-bottom:0.5rem;">📸</div>
+                        <div class="uploader-wrap">
+                            <div class="dropzone" id="dropzone">
+                                <input type="file" id="returnImages" name="images[]" accept="image/*" multiple <?php echo $isExisting ? 'disabled' : ''; ?>>
+                                <i class="ph ph-camera" style="font-size:2.5rem;color:#a8461f;margin-bottom:0.5rem;display:block;"></i>
                                 <div style="font-weight:700;font-size:0.95rem;color:#1c1b19;">Kéo ảnh vào đây hoặc bấm để chọn</div>
                                 <div style="font-size:0.8rem;color:#8a8377;margin-top:4px;">Tối đa 5 ảnh · ≤ 5MB/ảnh</div>
                             </div>
-                            <div class="uploader-preview" id="uploaderPreview"></div>
+                            <div class="uploader-preview" id="uploaderPreview">
+                                <?php if ($isExisting && !empty($returnImages)): ?>
+                                    <?php foreach ($returnImages as $imgUrl): ?>
+                                        <div class="preview-card">
+                                            <img src="<?php echo htmlspecialchars($imgUrl); ?>" alt="Ảnh minh chứng">
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </div>
                         </div>
                     </div>
 
                     <!-- 4. HOÀN TIỀN -->
                     <div class="return-section">
                         <h3>4. Phương thức hoàn tiền *</h3>
-                        <label class="method-box selected" data-method="wallet" <?= $isExisting ? 'style="pointer-events:none;opacity:0.6;"' : '' ?>>
-                            <input type="radio" name="refund_method" value="wallet" checked <?= $isExisting ? 'disabled' : '' ?>>
-                            <b>💰 Ví Atelier Pay</b>
-                            <div style="font-size:0.82rem;color:#6b7280;margin-top:4px;margin-left:1.6rem;">Số dư: <b><?php echo number_format($walletBalance, 0, ',', '.'); ?>đ</b> · Hoàn ngay sau khi duyệt</div>
+                        <label class="method-box <?php echo (!$isExisting || $existing['refund_method'] === 'wallet') ? 'selected' : ''; ?>" data-method="wallet">
+                            <input type="radio" name="refund_method" value="wallet" <?php echo (!$isExisting || $existing['refund_method'] === 'wallet') ? 'checked' : ''; ?> <?php echo $isExisting ? 'disabled' : ''; ?>>
+                            <b><i class="ph ph-wallet" style="color:#a8461f;"></i> Ví Atelier Pay</b>
+                            <?php if (!$isExisting): ?>
+                                <div style="font-size:0.82rem;color:#6b7280;margin-top:4px;margin-left:1.6rem;">Số dư: <b><?php echo number_format($walletBalance, 0, ',', '.'); ?>đ</b> · Hoàn ngay sau khi duyệt</div>
+                            <?php endif; ?>
                         </label>
-                        <label class="method-box" data-method="bank" <?= $isExisting ? 'style="pointer-events:none;opacity:0.6;"' : '' ?>>
-                            <input type="radio" name="refund_method" value="bank" <?= $isExisting ? 'disabled' : '' ?>>
-                            <b>🏦 Chuyển khoản ngân hàng</b>
-                            <div style="font-size:0.82rem;color:#6b7280;margin-top:4px;margin-left:1.6rem;">Hoàn về tài khoản đã liên kết (1-3 ngày)</div>
+                        <label class="method-box <?php echo ($isExisting && $existing['refund_method'] === 'bank') ? 'selected' : ''; ?>" data-method="bank">
+                            <input type="radio" name="refund_method" value="bank" <?php echo ($isExisting && $existing['refund_method'] === 'bank') ? 'checked' : ''; ?> <?php echo $isExisting ? 'disabled' : ''; ?>>
+                            <b><i class="ph ph-bank" style="color:#a8461f;"></i> Chuyển khoản ngân hàng</b>
+                            <?php if (!$isExisting): ?>
+                                <div style="font-size:0.82rem;color:#6b7280;margin-top:4px;margin-left:1.6rem;">Hoàn về tài khoản đã liên kết (1-3 ngày)</div>
+                            <?php endif; ?>
                         </label>
                         
-                        <div id="bankSelectWrap" hidden style="margin-top:0.5rem;padding-left:1.6rem;">
-                            <?php if (empty($banks)): ?>
-                                <div style="background:#fef3c7;color:#92400e;padding:10px 14px;border-radius:8px;font-size:0.85rem;">
-                                    ⚠ Chưa liên kết ngân hàng. <a href="wallet.php" style="color:#a8461f;font-weight:600;">Liên kết ngay →</a>
-                                </div>
-                            <?php else: ?>
-                                <select name="refund_bank_id" id="refundBankId" style="width:100%;padding:10px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:0.88rem;" <?= $isExisting ? 'disabled' : '' ?>>
-                                    <?php foreach ($banks as $b): ?>
-                                        <option value="<?php echo (int)$b['id']; ?>">
-                                            <?php echo sanitize($b['bank_name']); ?> · •••• <?php echo substr($b['account_no'], -4); ?> <?php echo $b['is_default'] ? '(Mặc định)' : ''; ?>
-                                        </option>
-                                    <?php endforeach; ?>
-                                </select>
-                            <?php endif; ?>
-                        </div>
+                        <?php if ($isExisting && $bankInfo): ?>
+                            <div style="margin-top:0.5rem;padding-left:1.6rem; font-size:0.85rem; color:#374151;">
+                                <b>STK nhận hoàn:</b> <?php echo htmlspecialchars($bankInfo['bank_name']); ?> - ••••<?php echo substr($bankInfo['account_no'], -4); ?>
+                            </div>
+                        <?php elseif (!$isExisting): ?>
+                            <div id="bankSelectWrap" <?php echo ($existing['refund_method'] ?? '') === 'bank' ? '' : 'hidden'; ?> style="margin-top:0.5rem;padding-left:1.6rem;">
+                                <?php if (empty($banks)): ?>
+                                    <div style="background:#fef3c7;color:#92400e;padding:10px 14px;border-radius:8px;font-size:0.85rem;">
+                                        <i class="ph ph-warning"></i> Chưa liên kết ngân hàng. <a href="wallet.php" style="color:#a8461f;font-weight:600;">Liên kết ngay →</a>
+                                    </div>
+                                <?php else: ?>
+                                    <select name="refund_bank_id" id="refundBankId" style="width:100%;padding:10px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:0.88rem;">
+                                        <?php foreach ($banks as $b): ?>
+                                            <option value="<?php echo (int)$b['id']; ?>">
+                                                <?php echo sanitize($b['bank_name']); ?> · •••• <?php echo substr($b['account_no'], -4); ?> <?php echo $b['is_default'] ? '(Mặc định)' : ''; ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                <?php endif; ?>
+                            </div>
+                        <?php endif; ?>
                     </div>
 
                     <!-- 5. PIN -->
                     <div class="return-section">
                         <h3>5. Xác nhận mã PIN *</h3>
                         <div style="background:#fafafa;border:1px solid #e5e7eb;border-radius:10px;padding:1.25rem;">
-                            <label style="display:block;font-size:0.88rem;color:#374151;margin-bottom:10px;font-weight:600;">🔐 Nhập mã PIN 6 số (Ví Atelier Pay)</label>
-                            <input type="password" name="pin" id="returnPin" inputmode="numeric" maxlength="6" placeholder="••••••" autocomplete="off" <?php echo (!$hasPin || $isExisting) ? 'disabled' : ''; ?>>
+                            <label style="display:flex; align-items:center; gap:6px; font-size:0.88rem;color:#374151;margin-bottom:10px;font-weight:600;">
+                                <i class="ph ph-lock-key" style="font-size:1.1rem; color:#a8461f;"></i> Nhập mã PIN 6 số (Ví Atelier Pay)
+                            </label>
+                            <?php if ($isExisting): ?>
+                                <div style="color:#166534; font-weight:600; font-size:0.9rem; display:flex; align-items:center; gap:6px;">
+                                    <i class="ph-fill ph-check-circle" style="font-size:1.2rem;"></i> Đã xác thực mã PIN
+                                </div>
+                            <?php else: ?>
+                                <input type="password" name="pin" id="returnPin" inputmode="numeric" maxlength="6" placeholder="••••••" autocomplete="off" <?php echo !$hasPin ? 'disabled' : ''; ?>>
+                            <?php endif; ?>
                         </div>
                     </div>
                 </form>
             </div>
 
-            <!-- CỘT PHẢI: PHƯƠNG THỨC GỬI HÀNG & TỔNG TIỀN -->
+            <!-- CỘT PHẢI: KHỐI ĐIỀU HƯỚNG / CHỌN PHƯƠNG THỨC / TEM VẬN ĐƠN -->
             <div class="sticky-sidebar">
                 <div class="return-card">
-                    <h3 style="margin-top:0;">6. Phương thức gửi hàng *</h3>
-                    
-                    <label class="method-box" id="optSelf" <?= $isExisting ? 'style="pointer-events:none;opacity:0.6;"' : '' ?>>
-                        <input type="radio" name="return_type" value="self" form="returnForm" <?= $isExisting ? 'disabled' : '' ?>>
-                        <b>Tự mang đến Shop</b>
-                        <div style="font-size:0.82rem;color:#6b7280;margin-top:4px;margin-left:1.6rem;">Giao trực tiếp, miễn phí</div>
-                    </label>
-                    
-                    <div id="selfInfo" style="display:none; background:#f0fdf4; border:1px solid #bbf7d0; padding:12px; border-radius:8px; margin-bottom:1rem; font-size:0.85rem; line-height:1.5;">
-                        <b>Địa chỉ Shop:</b><br>
-                        <?php echo htmlspecialchars($shopAddress); ?><br>
-                        <b>SĐT:</b> <?php echo htmlspecialchars($shopPhone); ?>
-                    </div>
-
-                    <label class="method-box" id="optShip" <?= $isExisting ? 'style="pointer-events:none;opacity:0.6;"' : '' ?>>
-                        <input type="radio" name="return_type" value="shipping" form="returnForm" <?= $isExisting ? 'disabled' : '' ?>>
-                        <b>Gửi qua Bưu điện</b>
-                        <div style="font-size:0.82rem;color:#6b7280;margin-top:4px;margin-left:1.6rem;">Tạo mã vận đơn gửi về Shop</div>
-                    </label>
-
-                    <div id="shipInfo" style="display:none; margin-bottom:1.5rem;">
-                        <label style="display:block;font-size:0.8rem;color:#374151;margin-bottom:6px;font-weight:600;">Chọn đơn vị vận chuyển:</label>
-                        <select name="carrier" id="carrierSelect" form="returnForm" style="width:100%;padding:10px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:0.88rem;" <?= $isExisting ? 'disabled' : '' ?>>
-                            <option value="SPX">Shopee Express (SPX)</option>
-                            <option value="GHN">Giao Hàng Nhanh (GHN)</option>
-                            <option value="VIETTEL">Viettel Post (VTP)</option>
-                            <option value="GHTK">Giao Hàng Tiết Kiệm (GHTK)</option>
-                        </select>
-                    </div>
-
-                    <hr style="border:0; border-top:1px dashed #efeae0; margin:1.25rem 0;">
-
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
-                        <div>
-                            <div style="font-size:0.75rem;text-transform:uppercase;color:#8a8377;font-weight:700;">Dự kiến hoàn</div>
-                            <div style="font-size:0.8rem;color:#7c3216;margin-top:2px;">Sau khi duyệt</div>
+                    <?php if (!$isExisting): ?>
+                        <!-- TRẠNG THÁI: TẠO MỚI -->
+                        <h3 style="margin-top:0;">Tổng quan</h3>
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1.5rem;">
+                            <div>
+                                <div style="font-size:0.75rem;text-transform:uppercase;color:#8a8377;font-weight:700;">Dự kiến hoàn</div>
+                                <div style="font-size:0.8rem;color:#7c3216;margin-top:2px;">Chờ Admin duyệt</div>
+                            </div>
+                            <div id="refundAmount" style="font-family:'IBM Plex Mono',monospace;font-size:1.6rem;font-weight:700;color:#a8461f;">0đ</div>
                         </div>
-                        <div id="refundAmount" style="font-family:'IBM Plex Mono',monospace;font-size:1.6rem;font-weight:700;color:#a8461f;">0đ</div>
-                    </div>
+                        <p id="returnErrorMsg" style="color:#b91c1c;font-size:0.85rem;margin:0 0 0.75rem;min-height:1em;text-align:center; font-weight:600;"></p>
+                        <button type="submit" form="returnForm" id="returnSubmitBtn" class="submit-btn" disabled>
+                            <i class="ph ph-paper-plane-tilt"></i> Gửi yêu cầu trả hàng
+                        </button>
 
-                    <p id="returnErrorMsg" style="color:#b91c1c;font-size:0.85rem;margin:0 0 0.75rem;min-height:1em;text-align:center;"></p>
+                    <?php elseif ($existingStatus === 'pending'): ?>
+                        <!-- TRẠNG THÁI: CHỜ DUYỆT -->
+                        <div style="text-align: center; padding: 2rem 0;">
+                            <i class="ph ph-hourglass" style="font-size: 3.5rem; color: #d97706; margin-bottom: 1rem;"></i>
+                            <h3 style="color: #92400e; margin-bottom: 1rem; justify-content:center;">Đang chờ duyệt</h3>
+                            <p style="color: #6b7280; font-size: 0.9rem; margin-bottom: 0; line-height:1.5;">
+                                Yêu cầu trả hàng <b>#<?= htmlspecialchars($existing['return_code']) ?></b> đã được gửi. Shop đang xem xét.
+                            </p>
+                        </div>
 
-                    <button type="submit" form="returnForm" id="returnSubmitBtn" class="submit-btn" disabled>
-                        <?= $isExisting ? 'Đã gửi yêu cầu' : 'Vui lòng chọn P.Thức gửi hàng' ?>
-                    </button>
+                    <?php elseif ($existingStatus === 'approved' && empty($existingType)): ?>
+                        <!-- TRẠNG THÁI: ĐÃ DUYỆT -> YÊU CẦU CHỌN PHƯƠNG THỨC -->
+                        <div style="text-align: center; margin-bottom: 1.5rem;">
+                            <i class="ph ph-check-circle" style="font-size: 2.5rem; color: #166534; margin-bottom: 0.5rem;"></i>
+                            <h3 style="color: #166534; margin: 0; justify-content:center;">Đã được duyệt!</h3>
+                        </div>
+                        
+                        <form method="POST">
+                            <input type="hidden" name="action" value="save_return_method">
+                            <input type="hidden" name="return_id" value="<?php echo $existing['id']; ?>">
+                            
+                            <label class="method-box selected" id="lblSelf" onclick="selectMethod('self')">
+                                <input type="radio" name="return_type" value="self" checked>
+                                <b><i class="ph ph-storefront" style="color:#a8461f;"></i> Tự mang đến Shop</b>
+                            </label>
+                            <div id="shopAddressBox" style="background:#f0fdf4; border:1px solid #bbf7d0; padding:12px; border-radius:8px; margin-bottom:1rem; font-size:0.85rem; line-height:1.5;">
+                                <b>Địa chỉ Shop:</b><br><?php echo htmlspecialchars($shopAddress); ?><br><b>SĐT:</b> <?php echo htmlspecialchars($shopPhone); ?>
+                            </div>
+
+                            <label class="method-box" id="lblShip" onclick="selectMethod('shipping')">
+                                <input type="radio" name="return_type" value="shipping">
+                                <b><i class="ph ph-truck" style="color:#a8461f;"></i> Gửi qua Bưu điện</b>
+                            </label>
+                            <div id="carrierBox" style="display:none; margin-bottom:1rem; padding-left:1.6rem;">
+                                <select name="carrier" style="width:100%;padding:10px 14px;border:1px solid #d1d5db;border-radius:8px;font-size:0.88rem;">
+                                    <option value="SPX">Shopee Express (SPX)</option>
+                                    <option value="GHN">Giao Hàng Nhanh (GHN)</option>
+                                    <option value="VIETTEL">Viettel Post (VTP)</option>
+                                    <option value="GHTK">Giao Hàng Tiết Kiệm (GHTK)</option>
+                                </select>
+                            </div>
+                            
+                            <button type="submit" class="submit-btn" style="margin-top:10px;">
+                                <i class="ph ph-check"></i> Xác nhận phương thức
+                            </button>
+                        </form>
+
+                    <?php elseif ($existingType === 'shipping'): ?>
+                        <!-- TRẠNG THÁI: ĐÃ CHỌN BƯU ĐIỆN -> HIỂN THỊ TEM VẬN ĐƠN -->
+                        <h3 style="color:#166534; margin-top:0; justify-content:center; font-size:1.1rem; display:flex; align-items:center; gap:6px;">
+                            <i class="ph-fill ph-check-circle"></i> Mã vận đơn của bạn
+                        </h3>
+                        <p style="color:#6b7280; font-size:0.85rem; margin-bottom: 1rem; text-align:center;">Vui lòng in và dán lên hộp hàng trước khi gửi.</p>
+                        
+                        <!-- TEM VẬN ĐƠN -->
+                        <div class="waybill-wrap show" id="returnWaybillSection">
+                            <div class="wb-label" id="printArea">
+                                <!-- Header -->
+                                <div class="wb-header">
+                                    <div class="wb-logo-area">
+                                        <div style="display:flex; flex-direction:column; align-items:flex-start;">
+                                            <div style="display:flex; align-items:center; gap:4px; margin-bottom:4px;">
+                                                <div style="width:20px; height:20px; background:<?php echo $logoColor; ?>; border-radius:4px; display:flex; align-items:center; justify-content:center; color:white; font-weight:bold; font-size:12px;"><?php echo $logoIcon; ?></div>
+                                                <div style="color:<?php echo $logoColor; ?>; font-size:16px; font-weight:bold; letter-spacing:-0.5px;"><?php echo $logoName; ?></div>
+                                            </div>
+                                            <div style="color:<?php echo $logoColor; ?>; font-size:26px; font-weight:900; line-height:0.9; font-style:italic; letter-spacing:-1px;"><?php echo $logoMain; ?></div>
+                                            <div style="color:<?php echo $logoColor; ?>; font-size:8px; font-weight:bold; letter-spacing:2px; margin-left:2px;"><?php echo $logoSub; ?></div>
+                                        </div>
+                                    </div>
+                                    <div class="wb-barcode-area">
+                                        <img id="returnBarcodeImg" src="https://barcode.tec-it.com/barcode.ashx?data=<?php echo urlencode($trackingNo); ?>&code=Code128&translate-esc=on&dpi=96&height=40&text=no" alt="Barcode">
+                                        <div class="wb-tracking-text">Mã vận đơn: <span id="returnTrackingNo"><?php echo htmlspecialchars($trackingNo); ?></span></div>
+                                        <div class="wb-tracking-text" style="margin-top:2px;">Mã đơn gốc: <span>#<?php echo $orderId; ?></span></div>
+                                    </div>
+                                </div>
+
+                                <div class="wb-dashed"></div>
+
+                                <div class="wb-addresses">
+                                    <div class="wb-col-left">
+                                        <div class="wb-addr-title">Từ (Người gửi):</div>
+                                        <div class="wb-addr-content">
+                                            <b><?php echo htmlspecialchars($order['full_name']); ?></b><br>
+                                            <?php echo htmlspecialchars($order['address']); ?><br>
+                                            <b>SĐT:</b> <?php echo htmlspecialchars($order['phone']); ?>
+                                        </div>
+                                    </div>
+                                    <div class="wb-col-right">
+                                        <div class="wb-addr-title">Đến: <?php echo !empty($order['note']) ? '(Ghi chú: ' . htmlspecialchars($order['note']) . ')' : '(Không có ghi chú)'; ?></div>
+                                        <div class="wb-addr-content">
+                                            <b>THE ATELIER STORE</b><br>
+                                            <?php echo htmlspecialchars($shopAddress); ?><br>
+                                            <b>SĐT:</b> <?php echo htmlspecialchars($shopPhone); ?>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="wb-sorting">
+                                    <div class="wb-sort-code">SE1-63-04-TU01</div>
+                                    <div class="wb-sort-dest">HÀNG HOÀN</div>
+                                </div>
+
+                                <div class="wb-body">
+                                    <div class="wb-items">
+                                        <div>
+                                            <b>Nội dung hàng (Tổng SL: <?php echo array_sum(array_column($items, 'quantity')); ?>)</b><br>
+                                            Hàng hoàn từ đơn #<?php echo $orderId; ?>
+                                        </div>
+                                        <div style="margin-top: auto; padding-top: 10px; font-size: 8px; font-style: italic; color:#333; line-height: 1.2; text-align: justify;">
+                                            Người gửi phải cam kết hàng hóa có đầy đủ chách hóa đơn, chứng từ, giấy phép cần thiết theo quy định của pháp luật và chịu trách nhiệm trước pháp luật về nội dung hàng hóa này.
+                                        </div>
+                                    </div>
+                                    <div class="wb-qr-area">
+                                        <img id="returnQrImg" src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=<?php echo urlencode($trackingNo); ?>" alt="QR">
+                                        <div class="wb-qr-sub"><?php echo substr($trackingNo, 0, 12); ?></div>
+                                        <div class="wb-date-text"><?php echo date('d-m-Y'); ?></div>
+                                    </div>
+                                </div>
+
+                                <div class="wb-footer">
+                                    <div class="wb-footer-left">
+                                        <div class="wb-cod-title">Tiền thu Người nhận:</div>
+                                        <div class="wb-cod-amount">0 VND</div>
+                                        <div class="wb-weight">Khối lượng: 500 g</div>
+                                    </div>
+                                    <div class="wb-footer-right">
+                                        <div class="wb-sign-box">
+                                            <div class="wb-sign-title">Chữ ký người nhận</div>
+                                            <div style="font-size:8px;">Xác nhận hàng nguyên vẹn</div>
+                                            <div></div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="wb-instructions">
+                                    <div class="wb-guide-text">Chỉ dẫn: <span style="text-decoration: underline;">Được đồng kiểm</span></div>
+                                    <div class="wb-return-text">Chuyển hoàn sau 3 lần phát</div>
+                                </div>
+
+                            </div>
+                        </div>
+
+                        <button type="button" class="btn-print no-print" onclick="window.print()" style="margin-top:10px;">
+                            <i class="ph ph-printer"></i> In Mã Vận Đơn
+                        </button>
+
+                    <?php elseif ($existingType === 'self'): ?>
+                        <!-- TRẠNG THÁI: ĐÃ CHỌN TỰ MANG ĐẾN -->
+                        <div style="text-align:center;">
+                            <i class="ph ph-storefront" style="font-size: 2.5rem; color: #166534; margin-bottom: 0.5rem;"></i>
+                            <h3 style="color: #166534; margin-top:0; justify-content:center;">Tự mang đến Shop</h3>
+                            <p style="color: #6b7280; font-size: 0.9rem; margin-bottom: 1rem;">Vui lòng mang hàng đến địa chỉ:</p>
+                            
+                            <div style="background: #f0fdf4; border: 1px solid #bbf7d0; padding: 1rem; border-radius: 12px; text-align: left; font-size:0.85rem; line-height:1.5;">
+                                <div style="font-weight: 700; color: #166534; margin-bottom: 4px;">THE ATELIER STORE</div>
+                                <div style="color: #374151;"><?php echo htmlspecialchars($shopAddress); ?></div>
+                                <div style="color: #374151; margin-top: 4px;"><b>SĐT:</b> <?php echo htmlspecialchars($shopPhone); ?></div>
+                            </div>
+                        </div>
+                    <?php endif; ?>
                 </div>
             </div>
 
         </div>
     </div>
-
-    <!-- GIAO DIỆN SAU KHI GỬI THÀNH CÔNG (HOẶC KHI BẤM IN LẠI MÃ) -->
-    <div id="returnSuccessSection" style="display: none; max-width: 600px; margin: 0 auto; padding: 0 15px;">
-        
-        <!-- Khung thông báo thành công -->
-        <div style="background:#ecfdf5; border:1px solid #bbf7d0; padding:1.5rem; border-radius:12px; text-align:center; margin-bottom:1.5rem; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
-            <h2 style="color:#166534; margin-top:0; font-size:1.3rem;" id="successTitle">Gửi yêu cầu thành công!</h2>
-            <p style="color:#374151; font-size:0.95rem; margin-bottom: 0;" id="successMsgDesc">Vui lòng in Mã vận đơn dưới đây, dán lên hộp hàng và mang ra bưu cục gửi về Shop.</p>
-            
-            <!-- KHUNG HIỂN THỊ MÃ VẬN ĐƠN ẢO -->
-            <div id="displayTrackingNoWrap" style="display:none; margin: 15px auto 20px; padding: 12px; background: #fff; border: 2px dashed #166534; border-radius: 8px; max-width: 320px;">
-                <div style="font-size: 0.85rem; color: #374151; text-transform: uppercase; font-weight: 700; letter-spacing: 0.05em;">Mã vận đơn của bạn</div>
-                <div id="displayTrackingNo" style="font-size: 1.6rem; font-weight: bold; color: #166534; letter-spacing: 1px; font-family: 'IBM Plex Mono', monospace; margin: 4px 0;">SPX123456</div>
-                <div style="font-size: 0.75rem; color: #6b7280;">(Chụp lại mã này để tra cứu)</div>
-            </div>
-
-            <button type="button" class="btn-print no-print" onclick="window.print()" id="btnPrintWaybill" style="display:none;">
-                🖨️ In Mã Vận Đơn
-            </button>
-            <a href="account.php" class="no-print" style="display:inline-block; margin-left:10px; padding:10px 20px; background:#fff; border:1px solid #d1d5db; border-radius:6px; color:#374151; font-weight:bold; text-decoration:none;">Về Tài khoản</a>
-        </div>
-
-        <!-- TEM VẬN ĐƠN (WAYBILL) -->
-        <div class="waybill-wrap" id="returnWaybillSection">
-            <div class="wb-label" id="printArea">
-                <div class="wb-header">
-                    <div class="wb-logo" id="wbLogo">SPX</div>
-                    <div class="wb-barcode">
-                        <img id="returnBarcodeImg" src="" alt="Barcode">
-                        <div class="wb-tracking-no" id="returnTrackingNo">SPXVN000000000</div>
-                        <div style="font-size:10px; color:#555; margin-top:2px;">Mã đơn gốc: #<?php echo (int)$order['id']; ?></div>
-                    </div>
-                </div>
-
-                <div class="wb-cols">
-                    <div class="wb-col">
-                        <div style="font-size:10px; color:#555; margin-bottom:2px;">TỪ (Người gửi):</div>
-                        <b><?php echo htmlspecialchars($order['full_name']); ?></b><br>
-                        <?php echo htmlspecialchars($order['phone']); ?><br>
-                        <?php echo htmlspecialchars($order['address']); ?>
-                    </div>
-                    <div class="wb-col">
-                        <div style="font-size:10px; color:#555; margin-bottom:2px;">ĐẾN (Shop):</div>
-                        <b>THE ATELIER STORE</b><br>
-                        <?php echo htmlspecialchars($shopAddress); ?><br>
-                        <b>SĐT:</b> <?php echo htmlspecialchars($shopPhone); ?>
-                    </div>
-                </div>
-
-                <div class="wb-sort-code">HÀNG HOÀN</div>
-
-                <div class="wb-body">
-                    <div class="wb-items">
-                        <b>Nội dung (Tổng SL: <span id="returnTotalQty">0</span>)</b><br>
-                        <div id="returnItemNames" style="margin-top:5px; color:#333;"></div>
-                        <div style="margin-top:8px; font-size:10px; font-style:italic; color:#555;">
-                            Người gửi chịu trách nhiệm về hàng hóa. Bưu gửi không được chứa hàng cấm, hàng dễ cháy nổ.
-                        </div>
-                    </div>
-                    <div class="wb-qr">
-                        <img id="returnQrImg" src="" alt="QR">
-                        <div class="wb-qr-code" id="returnQrCode">SPX000</div>
-                        <div style="font-size:10px; margin-top:4px;">Ngày: <?php echo date('d-m-Y'); ?></div>
-                    </div>
-                </div>
-
-                <div class="wb-footer">
-                    <div>
-                        <div style="font-size:11px; color:#555;">Loại đơn:</div>
-                        <div class="wb-cod" style="font-size:16px;">HÀNG HOÀN</div>
-                        <div style="font-size:11px; margin-top:6px;">KL: <span id="wbWeightDisplay">500g</span></div>
-                    </div>
-                    <div class="wb-sign">
-                        <div style="margin-bottom:25px;">Chữ ký người nhận</div>
-                        <div style="font-size:8px; color:#555;">(Xác nhận hàng nguyên vẹn)</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
 </main>
 
 <script>
+// JS DÀNH CHO FORM GỬI YÊU CẦU BAN ĐẦU
 (function () {
     var form       = document.getElementById('returnForm');
+    if (!form || form.classList.contains('form-readonly')) return; 
+
     var reasonSel  = document.getElementById('returnReason');
     var reasonGrp  = document.getElementById('reasonOtherGroup');
     var errMsg     = document.getElementById('returnErrorMsg');
@@ -525,52 +635,17 @@ try {
     var bankSel    = document.getElementById('refundBankId');
     var pinInput   = document.getElementById('returnPin');
     var submitBtn  = document.getElementById('returnSubmitBtn');
-    
-    // Phương thức gửi hàng
-    var returnTypeRadios = document.querySelectorAll('input[name="return_type"]');
-    var selfInfo  = document.getElementById('selfInfo');
-    var shipInfo  = document.getElementById('shipInfo');
-    var optSelf   = document.getElementById('optSelf');
-    var optShip   = document.getElementById('optShip');
-    var selectedReturnType = null;
 
-    // 1. CHỌN PHƯƠNG THỨC GỬI HÀNG
-    returnTypeRadios.forEach(function(radio) {
-        radio.addEventListener('change', function() {
-            selectedReturnType = this.value;
-            
-            optSelf.classList.remove('selected');
-            optShip.classList.remove('selected');
-            selfInfo.style.display = 'none';
-            shipInfo.style.display = 'none';
-
-            if (selectedReturnType === 'self') {
-                optSelf.classList.add('selected');
-                selfInfo.style.display = 'block';
-            } else {
-                optShip.classList.add('selected');
-                shipInfo.style.display = 'block';
-            }
-
-            if (!submitBtn.hasAttribute('data-existing')) {
-                submitBtn.disabled = false;
-                submitBtn.textContent = '📤 Gửi yêu cầu trả hàng';
-            }
-        });
-    });
-
-    // 2. LÝ DO KHÁC
+    // LÝ DO KHÁC
     reasonSel.addEventListener('change', function () {
         var isOther = this.value === 'Khác';
         reasonGrp.hidden = !isOther;
         if (!isOther) document.getElementById('reasonDetail').value = '';
     });
 
-    // 3. PHƯƠNG THỨC HOÀN TIỀN
+    // PHƯƠNG THỨC HOÀN TIỀN
     document.querySelectorAll('.method-box').forEach(function (opt) {
-        if (opt.id === 'optSelf' || opt.id === 'optShip') return;
         opt.addEventListener('click', function () {
-            if (this.style.pointerEvents === 'none') return; // Bỏ qua nếu đang bị khóa
             document.querySelectorAll('input[name="refund_method"]').forEach(r => r.closest('.method-box').classList.remove('selected'));
             this.classList.add('selected');
             var method = this.dataset.method;
@@ -579,7 +654,7 @@ try {
         });
     });
 
-    // 4. TÍNH TIỀN
+    // TÍNH TIỀN
     function recalc() {
         var total = 0;
         document.querySelectorAll('.item-check').forEach(function (cb) {
@@ -597,14 +672,15 @@ try {
                 qty.value = 1;
             }
         });
-        amtDisplay.textContent = total.toLocaleString('vi-VN') + 'đ';
+        if(amtDisplay) amtDisplay.textContent = total.toLocaleString('vi-VN') + 'đ';
+        submitBtn.disabled = (total === 0);
     }
     document.querySelectorAll('.item-check, .item-qty').forEach(function (el) {
         el.addEventListener('input', recalc);
         el.addEventListener('change', recalc);
     });
 
-    // 5. UPLOAD ẢNH (Bỏ qua nếu disabled)
+    // UPLOAD ẢNH
     var MAX_FILES = 5, MAX_SIZE = 5 * 1024 * 1024, ALLOWED = ['image/jpeg','image/png','image/webp','image/gif'];
     var fileInput = document.getElementById('returnImages');
     var dropzone = document.getElementById('dropzone');
@@ -647,7 +723,7 @@ try {
         dropzone.addEventListener('dragleave', function(e) { e.preventDefault(); dropzone.classList.remove('dragover'); });
     }
 
-    // 6. PIN INPUT
+    // PIN INPUT
     if (pinInput && !pinInput.disabled) {
         pinInput.addEventListener('input', function () {
             this.value = this.value.replace(/\D/g, '').slice(0, 6);
@@ -655,149 +731,89 @@ try {
         });
     }
 
-    // 7. SUBMIT FORM
-    if (form) {
-        form.addEventListener('submit', function (e) {
-            e.preventDefault();
-            errMsg.textContent = '';
+    // SUBMIT FORM
+    form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        errMsg.textContent = '';
 
-            if (!selectedReturnType) { errMsg.textContent = 'Vui lòng chọn Phương thức gửi hàng.'; return; }
-            var checked = document.querySelectorAll('.item-check:checked');
-            if (checked.length === 0) { errMsg.textContent = 'Vui lòng chọn sản phẩm muốn trả.'; return; }
-            if (!reasonSel.value) { errMsg.textContent = 'Vui lòng chọn lý do.'; return; }
-            if (reasonSel.value === 'Khác' && !document.getElementById('reasonDetail').value.trim()) { errMsg.textContent = 'Vui lòng nhập lý do cụ thể.'; return; }
-            if (filesList.length === 0) { errMsg.textContent = 'Vui lòng tải lên ít nhất 1 ảnh sản phẩm.'; return; }
-            
-            var method = form.querySelector('input[name="refund_method"]:checked').value;
-            if (method === 'bank' && (!bankSel || !bankSel.value)) { errMsg.textContent = 'Vui lòng chọn ngân hàng nhận tiền.'; return; }
-
-            var pinVal = (pinInput?.value || '').trim();
-            if (!/^\d{6}$/.test(pinVal)) {
-                errMsg.textContent = 'Vui lòng nhập mã PIN 6 số.';
-                if(pinInput) { pinInput.classList.add('error'); pinInput.focus(); }
-                return;
-            }
-
-            var formData = new FormData(form);
-            formData.append('return_type', selectedReturnType);
-            
-            var carrier = 'SPX';
-            if (selectedReturnType === 'shipping') {
-                carrier = document.getElementById('carrierSelect').value;
-                formData.append('carrier', carrier);
-            }
-
-            var old = submitBtn.textContent;
-            submitBtn.disabled = true;
-            submitBtn.textContent = 'Đang xử lý...';
-
-            fetch('ajax/submit_return.php', {
-                method: 'POST',
-                body: formData
-            })
-            .then(async r => {
-                var text = await r.text();
-                try { return JSON.parse(text); } 
-                catch (e) { console.error(text); alert("Lỗi Server:\n" + text.substring(0, 500)); throw new Error("Err"); }
-            })
-            .then(data => {
-                if (data.ok) {
-                    // Ẩn form, hiện thông báo
-                    document.getElementById('mainLayout').style.display = 'none';
-                    document.querySelector('a[href="account.php"]').style.display = 'none';
-                    var successSec = document.getElementById('returnSuccessSection');
-                    successSec.style.display = 'block';
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-
-                    if (selectedReturnType === 'shipping') {
-                        // === TẠO MÃ VẬN ĐƠN ẢO Y HỆT BÊN ADMIN ===
-                        var prefix = carrier === 'SPX' ? 'SPXVN' : (carrier === 'GHN' ? 'GHN' : (carrier === 'VIETTEL' ? 'VTP' : 'GHTK'));
-                        var trackingNo = prefix + Math.floor(100000000000 + Math.random() * 900000000000);
-
-                        renderWaybill(trackingNo, carrier, checked);
-                    } else {
-                        // Nếu tự mang đến, ẩn mã vận đơn và tem
-                        document.getElementById('displayTrackingNoWrap').style.display = 'none';
-                        document.getElementById('returnWaybillSection').style.display = 'none';
-                        document.getElementById('successMsgDesc').innerHTML = 'Vui lòng mang sản phẩm đến địa chỉ Shop dưới đây để được xử lý:<br><br><b>' + <?php echo json_encode($shopAddress); ?> + '</b><br>SĐT: ' + <?php echo json_encode($shopPhone); ?>;
-                    }
-                } else {
-                    errMsg.textContent = data.msg || 'Có lỗi xảy ra.';
-                    submitBtn.disabled = false;
-                    submitBtn.textContent = old;
-                    if (/PIN/i.test(data.msg || '') && pinInput) {
-                        pinInput.classList.add('error'); pinInput.focus();
-                    }
-                }
-            })
-            .catch(err => {
-                if (err.message !== "Err") errMsg.textContent = 'Lỗi kết nối máy chủ.';
-                submitBtn.disabled = false;
-                submitBtn.textContent = old;
-            });
-        });
-    }
-
-    // HÀM HIỂN THỊ TEM VẬN ĐƠN
-    window.renderWaybill = function(trackingNo, carrier, checkedItems) {
-        document.getElementById('displayTrackingNoWrap').style.display = 'block';
-        document.getElementById('displayTrackingNo').textContent = trackingNo;
-
-        var wbLogo = document.getElementById('wbLogo');
-        wbLogo.textContent = carrier === 'VIETTEL' ? 'VTP' : carrier;
-        wbLogo.style.color = carrier === 'SPX' ? '#ee4d2d' : (carrier === 'GHN' ? '#0055aa' : '#000');
-
-        document.getElementById('returnTrackingNo').textContent = trackingNo;
-        document.getElementById('returnBarcodeImg').src = 'https://barcode.tec-it.com/barcode.ashx?data=' + trackingNo + '&code=Code128&translate-esc=on&dpi=96&height=40&text=no';
-        document.getElementById('returnQrCode').textContent = trackingNo.substring(0, 12);
-        document.getElementById('returnQrImg').src = 'https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=' + trackingNo;
+        var checked = document.querySelectorAll('.item-check:checked');
+        if (checked.length === 0) { errMsg.textContent = 'Vui lòng chọn sản phẩm muốn trả.'; return; }
+        if (!reasonSel.value) { errMsg.textContent = 'Vui lòng chọn lý do.'; return; }
+        if (reasonSel.value === 'Khác' && !document.getElementById('reasonDetail').value.trim()) { errMsg.textContent = 'Vui lòng nhập lý do cụ thể.'; return; }
+        if (filesList.length === 0) { errMsg.textContent = 'Vui lòng tải lên ít nhất 1 ảnh sản phẩm.'; return; }
         
-        document.getElementById('btnPrintWaybill').style.display = 'inline-flex';
-        document.getElementById('returnWaybillSection').style.display = 'block';
-        
-        var itemNames = [];
-        var totalQty = 0;
-        
-        // Nếu truyền vào element checkbox (lúc submit mới)
-        if (checkedItems && checkedItems.length) {
-            checkedItems.forEach(cb => {
-                var label = cb.closest('.return-item');
-                var qty = parseInt(label.querySelector('.item-qty').value);
-                itemNames.push(label.querySelector('.name').textContent + ' (SL: ' + qty + ')');
-                totalQty += qty;
-            });
-        } else {
-            // Nếu hiện lại (không có checkbox) -> Chỉ hiện text chung
-            itemNames.push('Sản phẩm hoàn trả từ đơn hàng #<?= (int)$order['id'] ?>');
-            totalQty = 1;
+        var method = form.querySelector('input[name="refund_method"]:checked').value;
+        if (method === 'bank' && (!bankSel || !bankSel.value)) { errMsg.textContent = 'Vui lòng chọn ngân hàng nhận tiền.'; return; }
+
+        var pinVal = (pinInput?.value || '').trim();
+        if (!/^\d{6}$/.test(pinVal)) {
+            errMsg.textContent = 'Vui lòng nhập mã PIN 6 số.';
+            if(pinInput) { pinInput.classList.add('error'); pinInput.focus(); }
+            return;
         }
+
+        var formData = new FormData(form);
+
+        var old = submitBtn.innerHTML;
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="ph ph-spinner-gap" style="animation: spin 1s linear infinite;"></i> Đang gửi...';
         
-        document.getElementById('returnItemNames').innerHTML = itemNames.join('<br>');
-        document.getElementById('returnTotalQty').textContent = totalQty;
-    };
+        var style = document.createElement('style');
+        style.innerHTML = '@keyframes spin { 100% { transform: rotate(360deg); } }';
+        document.head.appendChild(style);
 
-    // HÀM IN LẠI MÃ VẬN ĐƠN CŨ
-    window.printExistingWaybill = function(returnCode) {
-        document.getElementById('mainLayout').style.display = 'none';
-        document.querySelector('a[href="account.php"]').style.display = 'none';
-        var successSec = document.getElementById('returnSuccessSection');
-        successSec.style.display = 'block';
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-
-        document.getElementById('successTitle').textContent = 'Mã vận đơn của bạn';
-        document.getElementById('successMsgDesc').textContent = 'Đây là mã vận đơn đã tạo trước đó. Vui lòng in ra và dán lên gói hàng.';
-
-        renderWaybill(returnCode, 'SPX', null);
-    };
-
-    // Khóa nút Submit nếu là đơn đã tồn tại
-    <?php if ($isExisting): ?>
-    submitBtn.disabled = true;
-    submitBtn.setAttribute('data-existing', '1');
-    <?php endif; ?>
+        fetch('ajax/submit_return.php', {
+            method: 'POST',
+            body: formData
+        })
+        .then(async r => {
+            var text = await r.text();
+            try { return JSON.parse(text); } 
+            catch (e) { console.error(text); alert("Lỗi Server:\n" + text.substring(0, 500)); throw new Error("Err"); }
+        })
+        .then(data => {
+            if (data.ok) {
+                window.location.reload();
+            } else {
+                errMsg.textContent = data.msg || 'Có lỗi xảy ra.';
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = old;
+                if (/PIN/i.test(data.msg || '') && pinInput) {
+                    pinInput.classList.add('error'); pinInput.focus();
+                }
+            }
+        })
+        .catch(err => {
+            if (err.message !== "Err") errMsg.textContent = 'Lỗi kết nối máy chủ.';
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = old;
+        });
+    });
 
     recalc();
 })();
+
+// JS DÀNH CHO PHẦN CHỌN PHƯƠNG THỨC (KHI ĐÃ DUYỆT)
+function selectMethod(method) {
+    var lblSelf = document.getElementById('lblSelf');
+    var lblShip = document.getElementById('lblShip');
+    var shopBox = document.getElementById('shopAddressBox');
+    var carrierBox = document.getElementById('carrierBox');
+
+    if (!lblSelf || !lblShip) return;
+
+    if (method === 'self') {
+        lblSelf.classList.add('selected');
+        lblShip.classList.remove('selected');
+        shopBox.style.display = 'block';
+        carrierBox.style.display = 'none';
+    } else {
+        lblShip.classList.add('selected');
+        lblSelf.classList.remove('selected');
+        shopBox.style.display = 'none';
+        carrierBox.style.display = 'block';
+    }
+}
 </script>
 
 <?php include 'includes/footer.php'; ?>

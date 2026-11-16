@@ -1,6 +1,6 @@
 <?php
 /**
- * SITE FOOTER
+ * SITE FOOTER — đồng bộ với admin/footer-manager.php (bảng footer_settings, id=1)
  * Bao gồm: brand, links, contact, nút gửi yêu cầu hỗ trợ (mở Modal)
  */
 
@@ -11,18 +11,81 @@ if (empty($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 }
 $__csrf = $_SESSION['csrf_token'];
-// Lấy dữ liệu Footer từ Database
+
+/* -------------------------------------------------------------
+   LẤY DỮ LIỆU FOOTER TỪ DATABASE
+   ------------------------------------------------------------- */
 $footerData = [];
-try {
-    $footerData = $pdo->query("SELECT * FROM footer_settings WHERE id = 1")->fetch(PDO::FETCH_ASSOC) ?: [];
-} catch (Exception $e) {
-    // Bỏ qua nếu bảng chưa tồn tại
+if (isset($pdo) && $pdo instanceof PDO) {
+    try {
+        $footerData = $pdo->query("SELECT * FROM footer_settings WHERE id = 1")
+                          ->fetch(PDO::FETCH_ASSOC) ?: [];
+    } catch (Exception $e) {
+        // Bảng chưa tồn tại — dùng toàn bộ fallback
+    }
 }
 
-// Hàm hỗ trợ lấy dữ liệu an toàn (nếu DB rỗng thì dùng mặc định)
-$fd = function($key, $default = '') use ($footerData) {
-    return htmlspecialchars($footerData[$key] ?? $default);
+/**
+ * Trả về giá trị đã escape HTML, hoặc $default nếu DB rỗng.
+ */
+$fd = function (string $key, string $default = '') use ($footerData): string {
+    $val = $footerData[$key] ?? '';
+    $val = is_string($val) ? trim($val) : '';
+    return htmlspecialchars($val !== '' ? $val : $default, ENT_QUOTES, 'UTF-8');
 };
+
+/**
+ * Trả về giá trị raw (chưa escape) — dùng để check tồn tại / build href.
+ */
+$fdRaw = function (string $key, string $default = '') use ($footerData): string {
+    $val = $footerData[$key] ?? '';
+    $val = is_string($val) ? trim($val) : '';
+    return $val !== '' ? $val : $default;
+};
+
+/**
+ * Chuẩn hóa URL MXH: tự thêm https:// nếu thiếu scheme.
+ */
+$normalizeUrl = function (string $url): string {
+    $url = trim($url);
+    if ($url === '') return '';
+    if (preg_match('#^https?://#i', $url)) return $url;
+    return 'https://' . ltrim($url, '/');
+};
+
+/* -------------------------------------------------------------
+   CẤU HÌNH MẠNG XÃ HỘI (key DB => [label, SVG])
+   ------------------------------------------------------------- */
+$socialNetworks = [
+    'facebook' => [
+        'label' => 'Facebook',
+        'icon'  => '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M22 12a10 10 0 1 0-11.56 9.88v-6.99H7.9V12h2.54V9.8c0-2.5 1.5-3.89 3.78-3.89 1.1 0 2.24.2 2.24.2v2.46h-1.26c-1.24 0-1.63.77-1.63 1.56V12h2.77l-.44 2.89h-2.33v6.99A10 10 0 0 0 22 12z"/></svg>',
+    ],
+    'instagram' => [
+        'label' => 'Instagram',
+        'icon'  => '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2.16c3.2 0 3.58.01 4.85.07 1.17.05 1.8.25 2.23.41.56.22.96.48 1.38.9.42.42.68.82.9 1.38.16.42.36 1.05.41 2.23.06 1.27.07 1.65.07 4.85s-.01 3.58-.07 4.85c-.05 1.17-.25 1.8-.41 2.23-.22.56-.48.96-.9 1.38-.42.42-.82.68-1.38.9-.42.16-1.05.36-2.23.41-1.27.06-1.65.07-4.85.07s-3.58-.01-4.85-.07c-1.17-.05-1.8-.25-2.23-.41a3.72 3.72 0 0 1-1.38-.9 3.72 3.72 0 0 1-.9-1.38c-.16-.42-.36-1.05-.41-2.23C2.17 15.58 2.16 15.2 2.16 12s.01-3.58.07-4.85c.05-1.17.25-1.8.41-2.23.22-.56.48-.96.9-1.38.42-.42.82-.68 1.38-.9.42-.16 1.05-.36 2.23-.41C8.42 2.17 8.8 2.16 12 2.16zM12 0C8.74 0 8.33.01 7.05.07 5.78.13 4.9.33 4.14.63c-.79.3-1.46.72-2.13 1.38C1.35 2.68.93 3.35.63 4.14.33 4.9.13 5.78.07 7.05.01 8.33 0 8.74 0 12s.01 3.67.07 4.95c.06 1.27.26 2.15.56 2.91.3.79.72 1.46 1.38 2.13.67.66 1.34 1.08 2.13 1.38.76.3 1.64.5 2.91.56C8.33 23.99 8.74 24 12 24s3.67-.01 4.95-.07c1.27-.06 2.15-.26 2.91-.56.79-.3 1.46-.72 2.13-1.38.66-.67 1.08-1.34 1.38-2.13.3-.76.5-1.64.56-2.91.06-1.28.07-1.69.07-4.95s-.01-3.67-.07-4.95c-.06-1.27-.26-2.15-.56-2.91-.3-.79-.72-1.46-1.38-2.13-.67-.66-1.34-1.08-2.13-1.38-.76-.3-1.64-.5-2.91-.56C15.67.01 15.26 0 12 0zm0 5.84a6.16 6.16 0 1 0 0 12.32 6.16 6.16 0 0 0 0-12.32zm0 10.16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm7.84-10.4a1.44 1.44 0 1 1-2.88 0 1.44 1.44 0 0 1 2.88 0z"/></svg>',
+    ],
+    'tiktok' => [
+        'label' => 'TikTok',
+        'icon'  => '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64c.3 0 .59.05.86.13V9.4a6.33 6.33 0 0 0-.86-.05A6.34 6.34 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1.04-.1z"/></svg>',
+    ],
+    'youtube' => [
+        'label' => 'YouTube',
+        'icon'  => '<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M23.5 6.2a3.02 3.02 0 0 0-2.12-2.14C19.5 3.55 12 3.55 12 3.55s-7.5 0-9.38.51A3.02 3.02 0 0 0 .5 6.2C0 8.08 0 12 0 12s0 3.92.5 5.8a3.02 3.02 0 0 0 2.12 2.14c1.88.51 9.38.51 9.38.51s7.5 0 9.38-.51a3.02 3.02 0 0 0 2.12-2.14C24 15.92 24 12 24 12s0-3.92-.5-5.8zM9.6 15.6V8.4l6.27 3.6L9.6 15.6z"/></svg>',
+    ],
+];
+
+/* -------------------------------------------------------------
+   TÍNH TRƯỚC CÁC GIÁ TRỊ HIỂN THỊ
+   ------------------------------------------------------------- */
+$aboutText  = $fd('about_text', 'Thời trang chất lượng cao với phong cách editorial tinh tế. Mỗi sản phẩm là một câu chuyện — chúng tôi kể bằng chất liệu, đường may và những chi tiết nhỏ nhất.');
+$addressRaw = $fdRaw('address');
+$phoneRaw   = $fdRaw('phone');
+$emailRaw   = $fdRaw('email');
+$copyRaw    = $fdRaw('copyright');
+$copyright  = $copyRaw !== ''
+    ? htmlspecialchars($copyRaw, ENT_QUOTES, 'UTF-8')
+    : htmlspecialchars('© ' . date('Y') . ' THE ATELIER — Made with care.', ENT_QUOTES, 'UTF-8');
 ?>
 </main> <!-- Đóng thẻ main từ header.php -->
 
@@ -186,6 +249,15 @@ $fd = function($key, $default = '') use ($footerData) {
         box-shadow: 0 4px 12px rgba(168, 70, 31, 0.3);
     }
 
+    .sf-support-link {
+        display: block;
+        text-align: center;
+        margin-top: 1rem;
+        font-size: 0.75rem;
+        color: #b98a1d;
+        text-decoration: none;
+    }
+
     /* ---- Bottom bar ---- */
     .sf-bottom {
         border-top: 1px solid var(--f-border);
@@ -270,7 +342,7 @@ $fd = function($key, $default = '') use ($footerData) {
     }
 
     .sf-modal-form { display: flex; flex-direction: column; gap: 12px; }
-    
+
     .sf-modal-input {
         width: 100%;
         padding: 12px 14px;
@@ -324,27 +396,34 @@ $fd = function($key, $default = '') use ($footerData) {
             <!-- CỘT 1: BRAND -->
             <div class="sf-brand">
                 <a href="index.php" class="sf-brand__logo">
-                    The Atelier<span class=""> .</span>
+                    The Atelier<span class="brand-dot">.</span>
                 </a>
                 <p class="sf-brand__tagline">Lookbook · Editorial Fashion</p>
-                <p class="sf-brand__desc">
-    <?php echo $fd('about_text', 'Thời trang chất lượng cao với phong cách editorial tinh tế. Mỗi sản phẩm là một câu chuyện — chúng tôi kể bằng chất liệu, đường may và những chi tiết nhỏ nhất.'); ?>
-</p>
+                <p class="sf-brand__desc"><?php echo $aboutText; ?></p>
 
-                <div class="sf-socials">
-                    <a href="#" class="sf-social-btn" title="Facebook" aria-label="Facebook">
-                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M22 12a10 10 0 1 0-11.56 9.88v-6.99H7.9V12h2.54V9.8c0-2.5 1.5-3.89 3.78-3.89 1.1 0 2.24.2 2.24.2v2.46h-1.26c-1.24 0-1.63.77-1.63 1.56V12h2.77l-.44 2.89h-2.33v6.99A10 10 0 0 0 22 12z"/></svg>
-                    </a>
-                    <a href="#" class="sf-social-btn" title="Instagram" aria-label="Instagram">
-                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 2.16c3.2 0 3.58.01 4.85.07 1.17.05 1.8.25 2.23.41.56.22.96.48 1.38.9.42.42.68.82.9 1.38.16.42.36 1.05.41 2.23.06 1.27.07 1.65.07 4.85s-.01 3.58-.07 4.85c-.05 1.17-.25 1.8-.41 2.23-.22.56-.48.96-.9 1.38-.42.42-.82.68-1.38.9-.42.16-1.05.36-2.23.41-1.27.06-1.65.07-4.85.07s-3.58-.01-4.85-.07c-1.17-.05-1.8-.25-2.23-.41a3.72 3.72 0 0 1-1.38-.9 3.72 3.72 0 0 1-.9-1.38c-.16-.42-.36-1.05-.41-2.23C2.17 15.58 2.16 15.2 2.16 12s.01-3.58.07-4.85c.05-1.17.25-1.8.41-2.23.22-.56.48-.96.9-1.38.42-.42.82-.68 1.38-.9.42-.16 1.05-.36 2.23-.41C8.42 2.17 8.8 2.16 12 2.16zM12 0C8.74 0 8.33.01 7.05.07 5.78.13 4.9.33 4.14.63c-.79.3-1.46.72-2.13 1.38C1.35 2.68.93 3.35.63 4.14.33 4.9.13 5.78.07 7.05.01 8.33 0 8.74 0 12s.01 3.67.07 4.95c.06 1.27.26 2.15.56 2.91.3.79.72 1.46 1.38 2.13.67.66 1.34 1.08 2.13 1.38.76.3 1.64.5 2.91.56C8.33 23.99 8.74 24 12 24s3.67-.01 4.95-.07c1.27-.06 2.15-.26 2.91-.56.79-.3 1.46-.72 2.13-1.38.66-.67 1.08-1.34 1.38-2.13.3-.76.5-1.64.56-2.91.06-1.28.07-1.69.07-4.95s-.01-3.67-.07-4.95c-.06-1.27-.26-2.15-.56-2.91-.3-.79-.72-1.46-1.38-2.13-.67-.66-1.34-1.08-2.13-1.38-.76-.3-1.64-.5-2.91-.56C15.67.01 15.26 0 12 0zm0 5.84a6.16 6.16 0 1 0 0 12.32 6.16 6.16 0 0 0 0-12.32zm0 10.16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm7.84-10.4a1.44 1.44 0 1 1-2.88 0 1.44 1.44 0 0 1 2.88 0z"/></svg>
-                    </a>
-                    <a href="#" class="sf-social-btn" title="TikTok" aria-label="TikTok">
-                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64c.3 0 .59.05.86.13V9.4a6.33 6.33 0 0 0-.86-.05A6.34 6.34 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1.04-.1z"/></svg>
-                    </a>
-                    <a href="#" class="sf-social-btn" title="YouTube" aria-label="YouTube">
-                        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M23.5 6.2a3.02 3.02 0 0 0-2.12-2.14C19.5 3.55 12 3.55 12 3.55s-7.5 0-9.38.51A3.02 3.02 0 0 0 .5 6.2C0 8.08 0 12 0 12s0 3.92.5 5.8a3.02 3.02 0 0 0 2.12 2.14c1.88.51 9.38.51 9.38.51s7.5 0 9.38-.51a3.02 3.02 0 0 0 2.12-2.14C24 15.92 24 12 24 12s0-3.92-.5-5.8zM9.6 15.6V8.4l6.27 3.6L9.6 15.6z"/></svg>
-                    </a>
-                </div>
+                <?php
+                // Chỉ render khối socials nếu có ít nhất 1 URL được cấu hình
+                $visibleSocials = [];
+                foreach ($socialNetworks as $key => $net) {
+                    $url = $normalizeUrl($fdRaw($key));
+                    if ($url !== '') {
+                        $visibleSocials[$key] = ['label' => $net['label'], 'icon' => $net['icon'], 'url' => $url];
+                    }
+                }
+                if (!empty($visibleSocials)): ?>
+                    <div class="sf-socials">
+                        <?php foreach ($visibleSocials as $net): ?>
+                            <a href="<?php echo htmlspecialchars($net['url'], ENT_QUOTES, 'UTF-8'); ?>"
+                               class="sf-social-btn"
+                               title="<?php echo htmlspecialchars($net['label'], ENT_QUOTES, 'UTF-8'); ?>"
+                               aria-label="<?php echo htmlspecialchars($net['label'], ENT_QUOTES, 'UTF-8'); ?>"
+                               target="_blank"
+                               rel="noopener noreferrer">
+                                <?php echo $net['icon']; ?>
+                            </a>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
             </div>
 
             <!-- CỘT 2: KHÁM PHÁ -->
@@ -381,30 +460,40 @@ $fd = function($key, $default = '') use ($footerData) {
                 <h4 class="sf-title">Liên Hệ</h4>
 
                 <ul class="sf-contact">
-    <li>
-        <svg viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
-        <span><?php echo $fd('address', 'số 6 phố Vũ Đức Úy, phường Thanh Liệt, Hà Nội'); ?></span>
-    </li>
-    <li>
-        <svg viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
-        <a href="tel:<?php echo preg_replace('/[^0-9]/', '', $fd('phone', '1900123456')); ?>">
-            <?php echo $fd('phone', '1900 123 456'); ?>
-        </a>
-    </li>
-    <li>
-        <svg viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-        <a href="mailto:<?php echo $fd('email', 'hello@theatelier.vn'); ?>">
-            <?php echo $fd('email', 'hello@theatelier.vn'); ?>
-        </a>
-    </li>
-</ul>
+                    <?php if ($addressRaw !== ''): ?>
+                        <li>
+                            <svg viewBox="0 0 24 24"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
+                            <span><?php echo htmlspecialchars($addressRaw, ENT_QUOTES, 'UTF-8'); ?></span>
+                        </li>
+                    <?php endif; ?>
+
+                    <?php if ($phoneRaw !== ''): 
+                        $phoneHref = preg_replace('/[^0-9+]/', '', $phoneRaw);
+                    ?>
+                        <li>
+                            <svg viewBox="0 0 24 24"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.13.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+                            <a href="tel:<?php echo htmlspecialchars($phoneHref, ENT_QUOTES, 'UTF-8'); ?>">
+                                <?php echo htmlspecialchars($phoneRaw, ENT_QUOTES, 'UTF-8'); ?>
+                            </a>
+                        </li>
+                    <?php endif; ?>
+
+                    <?php if ($emailRaw !== ''): ?>
+                        <li>
+                            <svg viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                            <a href="mailto:<?php echo htmlspecialchars($emailRaw, ENT_QUOTES, 'UTF-8'); ?>">
+                                <?php echo htmlspecialchars($emailRaw, ENT_QUOTES, 'UTF-8'); ?>
+                            </a>
+                        </li>
+                    <?php endif; ?>
+                </ul>
 
                 <!-- Nút mở Modal -->
                 <button type="button" class="sf-support-trigger" id="openSupportModal">
-                     Gửi yêu cầu hỗ trợ
+                    Gửi yêu cầu hỗ trợ
                 </button>
-                
-                <a href="support.php" class="sf-support-link" style="display:block;text-align:center;margin-top:1rem;font-size:0.75rem;color:#b98a1d;text-decoration:none;">
+
+                <a href="support.php" class="sf-support-link">
                     Xem thêm các chủ đề hỗ trợ →
                 </a>
             </div>
@@ -413,9 +502,7 @@ $fd = function($key, $default = '') use ($footerData) {
 
         <!-- BOTTOM -->
         <div class="sf-bottom">
-            <p class="sf-bottom__copy">
-                <?php echo $fd('copyright', '© ' . date('Y') . ' THE ATELIER — Made with care.'); ?>
-            </p>
+            <p class="sf-bottom__copy"><?php echo $copyright; ?></p>
             <div class="sf-bottom__links">
                 <a href="support.php?tab=privacy">Quyền riêng tư</a>
                 <a href="support.php?tab=terms">Điều khoản</a>
@@ -430,7 +517,7 @@ $fd = function($key, $default = '') use ($footerData) {
 <div class="sf-modal" id="supportModal" aria-hidden="true">
     <div class="sf-modal-box" role="dialog" aria-modal="true">
         <button type="button" class="sf-modal-close" id="closeSupportModal" aria-label="Đóng">&times;</button>
-        
+
         <h3 class="sf-modal-title">Gửi yêu cầu hỗ trợ</h3>
         <p class="sf-modal-desc">Vui lòng để lại thông tin, chúng tôi sẽ phản hồi bạn qua email trong thời gian sớm nhất.</p>
 
@@ -472,7 +559,7 @@ $fd = function($key, $default = '') use ($footerData) {
     var modal    = document.getElementById('supportModal');
     var openBtn  = document.getElementById('openSupportModal');
     var closeBtn = document.getElementById('closeSupportModal');
-    
+
     var form     = document.getElementById('sfSupportForm');
     var nameEl   = document.getElementById('sfSupportName');
     var emailEl  = document.getElementById('sfSupportEmail');
@@ -485,14 +572,14 @@ $fd = function($key, $default = '') use ($footerData) {
         openBtn.addEventListener('click', function () {
             modal.classList.add('show');
             document.body.style.overflow = 'hidden';
-            setTimeout(function() { nameEl.focus(); }, 100);
+            setTimeout(function () { nameEl.focus(); }, 100);
         });
     }
 
     function closeModal() {
         modal.classList.remove('show');
         document.body.style.overflow = '';
-        setTimeout(function() {
+        setTimeout(function () {
             respEl.className = 'sf-support-msg';
             respEl.textContent = '';
         }, 300);
@@ -506,7 +593,7 @@ $fd = function($key, $default = '') use ($footerData) {
             if (e.target === modal) closeModal();
         });
     }
-    
+
     // ESC để đóng
     document.addEventListener('keydown', function (e) {
         if (e.key === 'Escape' && modal.classList.contains('show')) closeModal();

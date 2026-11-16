@@ -1,7 +1,6 @@
 <?php
 require_once 'includes/config.php';
-// Nhúng file helper để tạo thông báo
-require_once 'admin/includes/notification_helper.php'; 
+require_once 'admin/includes/notification_helper.php';
 
 if (!isLoggedIn()) {
     header('Location: login.php');
@@ -47,7 +46,7 @@ try {
     $linkedBanks = $lb->fetchAll(PDO::FETCH_ASSOC);
 } catch (Throwable $e) { $linkedBanks = []; }
 
-$banksList = require 'includes/banks.php';
+$banksList = file_exists('includes/banks.php') ? require 'includes/banks.php' : [];
 
 $subtotal = 0;
 foreach ($cart as $item) {
@@ -90,9 +89,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if (!$voucherRow) {
                 $error = 'Mã giảm giá không hợp lệ hoặc đã hết hạn.';
-            }
-            // ===== CHECK LƯỢT SỬ DỤNG =====
-            else {
+            } else {
                 $usageLimit = isset($voucherRow['usage_limit']) ? (int)$voucherRow['usage_limit'] : 1;
                 $usedCount  = isset($voucherRow['used_count'])  ? (int)$voucherRow['used_count']  : 0;
                 $legacyUsed = (int)($voucherRow['used'] ?? 0);
@@ -119,28 +116,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         // ===== VALIDATION SERVER-SIDE =====
         if ($error !== '') {
-            // giữ lỗi voucher
+            // Giữ lỗi voucher
         } elseif (empty($fullName) || empty($phone) || empty($address)) {
             $error = 'Vui lòng điền đầy đủ thông tin giao hàng!';
         } elseif (!preg_match('/^[0-9+\-\s()]{8,20}$/', $phone)) {
             $error = 'Số điện thoại không hợp lệ!';
-        }
-        elseif (in_array($paymentMethod, ['bank', 'card'], true) && $linkedBankId <= 0) {
+        } elseif (in_array($paymentMethod, ['bank', 'card'], true) && $linkedBankId <= 0) {
             $error = 'Vui lòng chọn ngân hàng đã liên kết.';
-        }
-        elseif ($paymentMethod === 'card' && !preg_match('/^\d{12,19}$/', $cardId)) {
+        } elseif ($paymentMethod === 'card' && !preg_match('/^\d{12,19}$/', $cardId)) {
             $error = 'ID thẻ không hợp lệ (12-19 chữ số).';
-        }
-        elseif ($paymentMethod === 'wallet' && $walletBalance < $total) {
+        } elseif ($paymentMethod === 'wallet' && $walletBalance < $total) {
             $error = 'Số dư ví Atelier Pay không đủ để thanh toán đơn này.';
-        }
-        elseif (empty($_SESSION['pin_verified'])) {
+        } elseif (empty($_SESSION['pin_verified'])) {
             $error = 'Vui lòng xác minh mã PIN trước khi xác nhận đặt hàng.';
-        }
-        elseif ($paymentMethod === 'card' && empty($_SESSION['otp_verified'])) {
+        } elseif ($paymentMethod === 'card' && empty($_SESSION['otp_verified'])) {
             $error = 'Vui lòng xác minh mã OTP trước khi xác nhận đặt hàng.';
-        }
-        else {
+        } else {
             try {
                 $pdo->beginTransaction();
 
@@ -152,7 +143,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ];
                 $paymentStatus = $statusMap[$paymentMethod] ?? 'unpaid';
 
-                // Verify linked bank thuộc user
                 if (in_array($paymentMethod, ['bank', 'card'], true)) {
                     $vb = $pdo->prepare("SELECT id FROM linked_banks WHERE id = ? AND user_id = ?");
                     $vb->execute([$linkedBankId, $_SESSION['user_id']]);
@@ -161,7 +151,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
 
-                // Wallet — lock + check
                 if ($paymentMethod === 'wallet') {
                     $ub = $pdo->prepare("SELECT atelier_pay_balance FROM users WHERE id = ? FOR UPDATE");
                     $ub->execute([$_SESSION['user_id']]);
@@ -179,7 +168,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                          status, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NOW())
                 ");
-                $paidAt = ($paymentMethod === 'wallet') ? date('Y-m-d H:i:s') : null;
+                $paidAt = in_array($paymentMethod, ['wallet', 'card']) ? date('Y-m-d H:i:s') : null;
                 $stmt->execute([
                     $_SESSION['user_id'], $total, $fullName, $phone, $address, $note,
                     $paymentMethod, $paymentStatus,
@@ -192,8 +181,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $orderId = $pdo->lastInsertId();
 
-
-                // Wallet → trừ tiền + log transaction
                 if ($paymentMethod === 'wallet') {
                     $ub = $pdo->prepare("SELECT atelier_pay_balance FROM users WHERE id = ? FOR UPDATE");
                     $ub->execute([$_SESSION['user_id']]);
@@ -213,7 +200,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ]);
                 }
 
-                // Kiểm tra stock
                 foreach ($cart as $item) {
                     $pid  = (int)($item['product_id'] ?? $item['id']);
                     $size = $item['size'] ?? 'M';
@@ -225,7 +211,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
 
-                // Trừ tồn + insert
                 $itemStmt = $pdo->prepare("
                     INSERT INTO order_items (order_id, product_id, size, quantity, price)
                     VALUES (?, ?, ?, ?, ?)
@@ -248,12 +233,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ]);
                 }
 
-                /* ============================================================
-                   ✅ APPLY VOUCHER — ở ĐÚNG VỊ TRÍ (sau khi mọi thứ OK)
-                   ============================================================ */
                 if ($voucherRow) {
                     require_once 'includes/voucher_helper.php';
-
                     $applied = applyVoucher(
                         $pdo,
                         (int)$voucherRow['id'],
@@ -263,33 +244,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     );
 
                     if (!$applied) {
-                        // Voucher bị user khác dùng mất (race condition)
                         throw new Exception('Voucher vừa được sử dụng bởi người khác. Vui lòng chọn voucher khác.');
                     }
                 }
 
                 $pdo->commit();
 
-                // ============================================================
-                // ✅ BẮT ĐẦU CHÈN CODE THÔNG BÁO TẠI ĐÂY
-                // ============================================================
+                $notifDesc = 'Khách hàng ' . $fullName . ' vừa đặt đơn #' . $orderId . ' trị giá ' . number_format($total, 0, ',', '.') . 'đ.';
+
                 addNotification(
                     'order_new',
                     'Đơn hàng mới',
-                    'Khách hàng ' . $fullName . ' vừa đặt đơn #' . $orderId . ' trị giá ' . number_format($total, 0, ',', '.') . 'đ.',
+                    $notifDesc,
                     'order-detail.php?id=' . $orderId,
                     'high',
                     'ph-shopping-cart'
                 );
-                // ============================================================
-                // KẾT THÚC CODE THÔNG BÁO
-                // ============================================================
 
                 unset($_SESSION['otp_verified'], $_SESSION['otp_code'],
                       $_SESSION['otp_expires_at'], $_SESSION['otp_attempts']);
                 unset($_SESSION['pin_verified']);
 
-                // Xóa sản phẩm đã mua khỏi session cart
                 if (!empty($selectedKeys)) {
                     foreach ($selectedKeys as $key) {
                         unset($_SESSION['cart'][$key]);
@@ -299,7 +274,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     unset($_SESSION['cart']);
                 }
 
-                // Đồng bộ DB cart_storage
                 if (function_exists('clearCartFromDb') && function_exists('saveCartToDb')) {
                     if (empty($_SESSION['cart'])) {
                         clearCartFromDb($pdo);
@@ -308,28 +282,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
 
-                /* ============================================================
-                   REDIRECT — Phụ thuộc vào lựa chọn sau PIN (chỉ với bank)
-                   ============================================================ */
                 if ($paymentMethod === 'bank') {
                     $redirectAfter = $_POST['redirect_after_order'] ?? 'payment';
 
                     if ($redirectAfter === 'home') {
-                        /* Người dùng chọn "Về trang chủ" */
                         $_SESSION['flash_message'] = [
                             'type'    => 'success',
-                            'message' => "✅ Đặt hàng thành công! Đơn #$orderId đang chờ thanh toán. Bạn có thể thanh toán sau trong Tài khoản."
+                            'message' => "Đặt hàng thành công! Đơn #$orderId đang chờ thanh toán. Bạn có thể thanh toán sau trong mục Đơn hàng."
                         ];
                         header('Location: index.php');
                         exit;
                     }
 
-                    /* Mặc định: "Thanh toán ngay" → chuyển tới trang thanh toán */
                     header('Location: payment.php?order_id=' . $orderId);
                     exit;
                 }
 
-                /* COD / Wallet / Card → order_success */
                 header('Location: order_success.php?order_id=' . $orderId);
                 exit;
 
@@ -355,169 +323,10 @@ if (function_exists('getActiveBirthdayVoucher') && function_exists('isBirthdayTo
     $isBirthday          = isBirthdayToday($currentUser);
 }
 
-/* ===== Load thông tin ngân hàng ===== */
-$bank = [];
-try {
-    $bank = $pdo->query("SELECT * FROM bank_settings WHERE id = 1 LIMIT 1")->fetch(PDO::FETCH_ASSOC) ?: [];
-} catch (Exception $e) {
-    $bank = [];
-}
-
-$bankBin          = $bank['bank_bin']         ?? '970436';
-$bankName         = $bank['bank_name']        ?? 'Vietcombank';
-$bankAccountNo    = $bank['account_no']       ?? '';
-$bankAccountName  = $bank['account_name']     ?? '';
-$bankQrImage      = $bank['qr_image']         ?? '';
-$bankTransferNote = $bank['transfer_note']    ?? 'Họ tên + SĐT';
-$bankInstruction  = $bank['instruction']      ?? '';
 include 'includes/header.php';
 ?>
 
 <style>
-/* ===== Wallet badge ===== */
-/* ============================================================
-   BANK CHOICE MODAL — Sau khi PIN thành công
-   ============================================================ */
-.bank-choice-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(28, 27, 25, 0.7);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    z-index: 100000;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    padding: 20px;
-}
-.bank-choice-overlay.show {
-    display: flex;
-    animation: bcmFadeIn 0.25s ease;
-}
-@keyframes bcmFadeIn {
-    from { opacity: 0; }
-    to   { opacity: 1; }
-}
-
-.bank-choice-box {
-    background: #fffdf9;
-    border-radius: 16px;
-    width: 100%;
-    max-width: 460px;
-    padding: 32px 28px 28px;
-    text-align: center;
-    box-shadow: 0 20px 60px rgba(28, 27, 25, 0.28);
-    animation: bcmSlideUp 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
-    position: relative;
-}
-@keyframes bcmSlideUp {
-    from { opacity: 0; transform: translateY(24px) scale(0.96); }
-    to   { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-.bank-choice-icon {
-    width: 72px;
-    height: 72px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
-    color: #166534;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 2.2rem;
-    margin: 0 auto 18px;
-    box-shadow: 0 8px 24px rgba(22, 101, 52, 0.18);
-    animation: bcmPop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s both;
-}
-@keyframes bcmPop {
-    from { transform: scale(0); }
-    to   { transform: scale(1); }
-}
-
-.bank-choice-title {
-    font-family: 'Fraunces', Georgia, serif;
-    font-size: 1.55rem;
-    font-weight: 600;
-    color: #1c1b19;
-    margin: 0 0 10px;
-    letter-spacing: -0.01em;
-}
-
-.bank-choice-desc {
-    font-size: 0.92rem;
-    color: #57534e;
-    line-height: 1.65;
-    margin: 0 0 6px;
-}
-
-.bank-choice-subdesc {
-    font-size: 0.82rem;
-    color: #8a8377;
-    margin: 0 0 24px;
-    line-height: 1.55;
-}
-
-.bank-choice-actions {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.bank-choice-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 10px;
-    padding: 15px 20px;
-    border-radius: 10px;
-    font-family: inherit;
-    font-size: 0.95rem;
-    font-weight: 700;
-    border: none;
-    cursor: pointer;
-    transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
-    text-decoration: none;
-    letter-spacing: 0.02em;
-}
-
-.bank-choice-btn--primary {
-    background: #a8461f;
-    color: #fffdf9;
-    box-shadow: 0 4px 14px rgba(168, 70, 31, 0.28);
-}
-.bank-choice-btn--primary:hover {
-    background: #8f3a18;
-    transform: translateY(-2px);
-    box-shadow: 0 8px 20px rgba(168, 70, 31, 0.35);
-}
-.bank-choice-btn--primary:active {
-    transform: translateY(0);
-}
-
-.bank-choice-btn--ghost {
-    background: #f5f2ec;
-    color: #57534e;
-    border: 1px solid #e8e0d0;
-}
-.bank-choice-btn--ghost:hover {
-    background: #e8e0d0;
-    color: #1c1b19;
-}
-
-.bank-choice-icon--pay { font-size: 1.15rem; }
-
-@media (max-width: 480px) {
-    .bank-choice-box {
-        padding: 26px 22px 22px;
-    }
-    .bank-choice-title {
-        font-size: 1.35rem;
-    }
-    .bank-choice-btn {
-        padding: 14px 16px;
-        font-size: 0.9rem;
-    }
-}
 .wallet-badge {
     display: inline-block;
     font-family: 'IBM Plex Mono', monospace;
@@ -541,7 +350,6 @@ include 'includes/header.php';
 .wallet-note a { color: inherit; font-weight: 600; text-decoration: underline; }
 .payment-option--disabled { opacity: 0.55; cursor: not-allowed; }
 
-/* ===== Bank picker ===== */
 .bank-picker {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -609,7 +417,6 @@ include 'includes/header.php';
 }
 .bank-empty a { color: #a8461f; font-weight: 600; text-decoration: underline; }
 
-/* ===== Card input ===== */
 .card-input-group { display: flex; gap: 10px; margin-top: 12px; }
 .card-input-group input {
     flex: 1;
@@ -626,6 +433,76 @@ include 'includes/header.php';
     border-color: #a8461f;
     background: #fff;
     box-shadow: 0 0 0 3px rgba(168, 70, 31, 0.1);
+}
+
+/* ===== MODAL BANK CHOICE ===== */
+.bank-choice-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(28, 27, 25, 0.7);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    z-index: 100000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+.bank-choice-overlay.show {
+    display: flex;
+    animation: bcmFadeIn 0.25s ease;
+}
+@keyframes bcmFadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+.bank-choice-box {
+    background: #fffdf9;
+    border-radius: 16px;
+    width: 100%;
+    max-width: 460px;
+    padding: 32px 28px 28px;
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(28, 27, 25, 0.28);
+    animation: bcmSlideUp 0.32s cubic-bezier(0.34, 1.56, 0.64, 1);
+    position: relative;
+}
+@keyframes bcmSlideUp {
+    from { opacity: 0; transform: translateY(24px) scale(0.96); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.bank-choice-icon {
+    width: 72px; height: 72px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+    color: #166534;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 2.2rem;
+    margin: 0 auto 18px;
+    box-shadow: 0 8px 24px rgba(22, 101, 52, 0.18);
+}
+.bank-choice-title {
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: 1.55rem;
+    font-weight: 600;
+    color: #1c1b19;
+    margin: 0 0 10px;
+}
+.bank-choice-desc { font-size: 0.92rem; color: #57534e; line-height: 1.65; margin: 0 0 6px; }
+.bank-choice-subdesc { font-size: 0.82rem; color: #8a8377; margin: 0 0 24px; line-height: 1.55; }
+.bank-choice-actions { display: flex; flex-direction: column; gap: 10px; }
+.bank-choice-btn {
+    display: flex; align-items: center; justify-content: center;
+    gap: 10px; padding: 15px 20px;
+    border-radius: 10px; font-family: inherit;
+    font-size: 0.95rem; font-weight: 700;
+    border: none; cursor: pointer; text-decoration: none;
+}
+.bank-choice-btn--primary {
+    background: #a8461f; color: #fffdf9;
+    box-shadow: 0 4px 14px rgba(168, 70, 31, 0.28);
+}
+.bank-choice-btn--ghost {
+    background: #f5f2ec; color: #57534e;
+    border: 1px solid #e8e0d0;
 }
 </style>
 
@@ -697,7 +574,7 @@ include 'includes/header.php';
                             <input type="radio" name="payment_method" value="cod"
                                    <?php echo $defaultPayment === 'cod' ? 'checked' : ''; ?>>
                             <div class="payment-option__body">
-                                <div class="payment-option__icon">💵</div>
+                                <div class="payment-option__icon"><i class="ph ph-money" style="font-size:1.8rem;color:#57534e;"></i></div>
                                 <div class="payment-option__info">
                                     <strong>Thanh toán khi nhận hàng (COD)</strong>
                                     <span>Trả tiền mặt cho shipper — xác minh PIN</span>
@@ -712,7 +589,7 @@ include 'includes/header.php';
                                    <?php echo $defaultPayment === 'wallet' ? 'checked' : ''; ?>
                                    <?php echo $walletBalance < $total ? 'disabled' : ''; ?>>
                             <div class="payment-option__body">
-                                <div class="payment-option__icon">💰</div>
+                                <div class="payment-option__icon"><i class="ph ph-wallet" style="font-size:1.8rem;color:#57534e;"></i></div>
                                 <div class="payment-option__info">
                                     <strong>Ví Atelier Pay
                                         <span class="wallet-badge <?php echo $walletBalance >= $total ? 'wallet-badge--ok' : 'wallet-badge--no'; ?>">
@@ -722,8 +599,8 @@ include 'includes/header.php';
                                     <span>Trừ trực tiếp số dư ví — thanh toán nhanh</span>
                                     <?php if ($walletBalance < $total): ?>
                                         <span class="wallet-note">
-                                            ⚠️ Số dư không đủ (cần thêm <b><?php echo number_format($total - $walletBalance, 0, ',', '.'); ?>đ</b>).
-                                            <a href="wallet.php" target="_blank">Nạp thêm →</a>
+                                            <i class="ph ph-warning-circle"></i> Số dư không đủ (cần thêm <b><?php echo number_format($total - $walletBalance, 0, ',', '.'); ?>đ</b>).
+                                            <a href="wallet.php" target="_blank">Nạp thêm &rarr;</a>
                                         </span>
                                     <?php endif; ?>
                                 </div>
@@ -736,7 +613,7 @@ include 'includes/header.php';
                             <input type="radio" name="payment_method" value="bank"
                                    <?php echo $defaultPayment === 'bank' ? 'checked' : ''; ?>>
                             <div class="payment-option__body">
-                                <div class="payment-option__icon">🏦</div>
+                                <div class="payment-option__icon"><i class="ph ph-bank" style="font-size:1.8rem;color:#57534e;"></i></div>
                                 <div class="payment-option__info">
                                     <strong>Chuyển khoản ngân hàng</strong>
                                     <span>Chọn ngân hàng đã liên kết — có thể thanh toán sau</span>
@@ -751,12 +628,12 @@ include 'includes/header.php';
                                    <?php echo $defaultPayment === 'card' ? 'checked' : ''; ?>
                                    <?php echo empty($linkedBanks) ? 'disabled' : ''; ?>>
                             <div class="payment-option__body">
-                                <div class="payment-option__icon">💳</div>
+                                <div class="payment-option__icon"><i class="ph ph-credit-card" style="font-size:1.8rem;color:#57534e;"></i></div>
                                 <div class="payment-option__info">
                                     <strong>Thẻ tín dụng / Ghi nợ</strong>
                                     <span>Nhập ID thẻ liên kết ví — xác minh PIN + OTP</span>
                                     <?php if (empty($linkedBanks)): ?>
-                                        <span class="wallet-note">⚠️ Cần liên kết ngân hàng trước.</span>
+                                        <span class="wallet-note"><i class="ph ph-warning-circle"></i> Cần liên kết ngân hàng trước.</span>
                                     <?php endif; ?>
                                 </div>
                                 <div class="payment-option__check"></div>
@@ -768,14 +645,14 @@ include 'includes/header.php';
                     <!-- EXTRA: WALLET -->
                     <div class="payment-extra" id="paymentExtraWallet" hidden>
                         <div class="payment-extra__box">
-                            <strong>💰 Thanh toán bằng ví Atelier Pay</strong>
+                            <strong style="display:flex;align-items:center;gap:6px;"><i class="ph ph-wallet"></i> Thanh toán bằng ví Atelier Pay</strong>
                             <p>Hệ thống sẽ trừ <b><?php echo number_format($total, 0, ',', '.'); ?>đ</b> từ số dư ví.</p>
                             <p style="margin-top:8px;">
                                 Số dư: <b style="color:#a8461f;font-family:'IBM Plex Mono',monospace;"><?php echo number_format($walletBalance, 0, ',', '.'); ?>đ</b>
                                 <?php if ($walletBalance >= $total): ?>
-                                    <span style="color:#166534;">→ Đủ ✓</span>
+                                    <span style="color:#166534; font-weight:600;"><i class="ph ph-check-circle"></i> Đủ</span>
                                 <?php else: ?>
-                                    <span style="color:#b91c1c;">→ Không đủ</span>
+                                    <span style="color:#b91c1c; font-weight:600;"><i class="ph ph-x-circle"></i> Không đủ</span>
                                 <?php endif; ?>
                             </p>
                         </div>
@@ -784,7 +661,7 @@ include 'includes/header.php';
                     <!-- EXTRA: BANK PICK -->
                     <div class="payment-extra" id="paymentExtraBankPick" hidden>
                         <div class="payment-extra__box">
-                            <strong>🏦 Chọn ngân hàng thanh toán</strong>
+                            <strong style="display:flex;align-items:center;gap:6px;"><i class="ph ph-bank"></i> Chọn ngân hàng thanh toán</strong>
                             <p style="margin-bottom:12px;font-size:0.85rem;color:#8a8377;">
                                 Bạn có thể thanh toán ngay hoặc để sau. Đơn sẽ ở trạng thái <b>Chưa thanh toán</b>.
                             </p>
@@ -792,7 +669,7 @@ include 'includes/header.php';
                             <?php if (empty($linkedBanks)): ?>
                                 <div class="bank-empty">
                                     Bạn chưa liên kết ngân hàng nào.<br>
-                                    <a href="wallet.php" target="_blank">→ Liên kết ngân hàng ngay</a>
+                                    <a href="wallet.php" target="_blank">&rarr; Liên kết ngân hàng ngay</a>
                                 </div>
                             <?php else: ?>
                                 <div class="bank-picker" id="bankPicker">
@@ -827,13 +704,13 @@ include 'includes/header.php';
                     <!-- EXTRA: CARD -->
                     <div class="payment-extra" id="paymentExtraCardPick" hidden>
                         <div class="payment-extra__box">
-                            <strong>💳 Thanh toán bằng thẻ</strong>
+                            <strong style="display:flex;align-items:center;gap:6px;"><i class="ph ph-credit-card"></i> Thanh toán bằng thẻ</strong>
                             <p style="font-size:0.85rem;color:#8a8377;">Chọn ngân hàng phát hành + nhập ID thẻ (12-19 chữ số).</p>
 
                             <?php if (empty($linkedBanks)): ?>
                                 <div class="bank-empty">
                                     Cần liên kết ngân hàng trước.<br>
-                                    <a href="wallet.php" target="_blank">→ Liên kết ngay</a>
+                                    <a href="wallet.php" target="_blank">&rarr; Liên kết ngay</a>
                                 </div>
                             <?php else: ?>
                                 <div class="bank-picker" id="cardBankPicker">
@@ -875,7 +752,7 @@ include 'includes/header.php';
 
                     <?php if ($isBirthday && $userBirthdayVoucher): ?>
                         <div class="birthday-greeting">
-                            🎂 <strong>Chúc mừng sinh nhật!</strong> Bạn có voucher giảm
+                            <i class="ph ph-cake" style="font-size:1.2rem; margin-right:4px;"></i> <strong>Chúc mừng sinh nhật!</strong> Bạn có voucher giảm
                             <strong><?php echo (int)$userBirthdayVoucher['discount_percent']; ?>%</strong>
                             cho đơn hàng hôm nay.
                             <div class="birthday-code">
@@ -941,15 +818,6 @@ include 'includes/header.php';
                             </strong>
                         </div>
 
-                        <div class="summary-row">
-                            <span>Phí vận chuyển</span>
-                            <?php if ($shippingFee === 0): ?>
-                                <span class="free">Miễn phí</span>
-                            <?php else: ?>
-                                <strong><?php echo number_format($shippingFee, 0, ',', '.'); ?>đ</strong>
-                            <?php endif; ?>
-                        </div>
-
                         <?php if ($shippingFee > 0): ?>
                             <p class="summary-hint">
                                 Mua thêm <b><?php echo number_format(500000 - $subtotal, 0, ',', '.'); ?>đ</b> để được miễn phí ship
@@ -966,11 +834,11 @@ include 'includes/header.php';
                         </div>
                     </div>
 
-                    <button type="submit" class="btn-checkout-submit" id="btnSubmitCheckout">
-                        ✓ XÁC NHẬN ĐẶT HÀNG
+                    <button type="submit" class="btn-checkout-submit" id="btnSubmitCheckout" style="display:flex;align-items:center;justify-content:center;gap:8px;">
+                        <i class="ph ph-check-circle" style="font-size:1.2rem;"></i> XÁC NHẬN ĐẶT HÀNG
                     </button>
 
-                    <a href="cart.php" class="link-back-cart">← Quay lại giỏ hàng</a>
+                    <a href="cart.php" class="link-back-cart">&larr; Quay lại giỏ hàng</a>
                 </div>
             </aside>
 
@@ -978,7 +846,7 @@ include 'includes/header.php';
     </div>
 </main>
 
-<!-- OVERLAY LOADING / SUCCESS -->
+<!-- OVERLAY LOADING -->
 <div class="otp-loading-overlay" id="loadingOverlay" aria-hidden="true">
     <div class="otp-loading-box" id="loadingBox">
         <div class="hourglass-spinner"></div>
@@ -991,7 +859,7 @@ include 'includes/header.php';
 <div class="otp-modal-overlay" id="otpModal" aria-hidden="true">
     <div class="otp-modal" role="dialog" aria-modal="true">
         <button type="button" class="otp-modal__close" id="otpCloseBtn" aria-label="Đóng">&times;</button>
-        <div class="otp-modal__icon">📧</div>
+        <div class="otp-modal__icon"><i class="ph ph-envelope-simple" style="color:#a8461f;"></i></div>
         <h2 class="otp-modal__title">Xác minh thanh toán</h2>
         <p class="otp-modal__subtitle">
             Mã OTP đã được gửi tới email<br>
@@ -1015,7 +883,7 @@ include 'includes/header.php';
 <div class="otp-modal-overlay" id="pinModal" aria-hidden="true">
     <div class="otp-modal" role="dialog" aria-modal="true">
         <button type="button" class="otp-modal__close" id="pinCloseBtn" aria-label="Đóng">&times;</button>
-        <div class="otp-modal__icon" id="pinIcon">🔐</div>
+        <div class="otp-modal__icon" id="pinIcon" style="color:#a8461f;"><i class="ph ph-lock-key"></i></div>
         <h2 class="otp-modal__title" id="pinTitle">Xác minh mã PIN</h2>
         <p class="otp-modal__subtitle" id="pinSubtitle">Nhập mã PIN 6 số để xác nhận thanh toán</p>
 
@@ -1062,6 +930,27 @@ include 'includes/header.php';
     </div>
 </div>
 
+<!-- MODAL BANK CHOICE -->
+<div class="bank-choice-overlay" id="bankChoiceModal" aria-hidden="true">
+    <div class="bank-choice-box" role="dialog" aria-modal="true">
+        <div class="bank-choice-icon"><i class="ph ph-check"></i></div>
+        <h2 class="bank-choice-title">Đơn hàng đã sẵn sàng!</h2>
+        <p class="bank-choice-desc">Xác minh mã PIN thành công. Bạn muốn làm gì tiếp theo?</p>
+        <p class="bank-choice-subdesc">
+            <b>Thanh toán ngay</b> để hoàn tất đơn hàng,<br>
+            hoặc <b>Về trang chủ</b> để thanh toán sau.
+        </p>
+        <div class="bank-choice-actions">
+            <button type="button" class="bank-choice-btn bank-choice-btn--primary" id="btnPayNow">
+                Thanh toán ngay
+            </button>
+            <button type="button" class="bank-choice-btn bank-choice-btn--ghost" id="btnGoHome">
+                Về trang chủ
+            </button>
+        </div>
+    </div>
+</div>
+
 <script src="js/chatbot.js"></script>
 <script>
 (function () {
@@ -1073,10 +962,10 @@ include 'includes/header.php';
     }
 
     function updateSummary(discount, voucherCode) {
-        var discountRow    = document.getElementById('discountRow');
-        var discountLabel  = document.getElementById('discountLabel');
-        var discountAmount = document.getElementById('discountAmount');
-        var totalEl        = document.getElementById('totalAmount');
+        var discountRow     = document.getElementById('discountRow');
+        var discountLabel   = document.getElementById('discountLabel');
+        var discountAmount  = document.getElementById('discountAmount');
+        var totalEl         = document.getElementById('totalAmount');
 
         var total = Math.max(0, CART_SUBTOTAL - discount + SHIPPING_FEE);
 
@@ -1090,9 +979,6 @@ include 'includes/header.php';
         if (totalEl) totalEl.textContent = formatVnd(total);
     }
 
-    /* ============================================================
-       Extras + bank picker
-       ============================================================ */
     var radios = document.querySelectorAll('input[name="payment_method"]');
     var extraWallet   = document.getElementById('paymentExtraWallet');
     var extraBankPick = document.getElementById('paymentExtraBankPick');
@@ -1129,7 +1015,6 @@ include 'includes/header.php';
         syncHiddenInputs(val);
     }
 
-    /* Bank picker selected class */
     document.querySelectorAll('.bank-pick').forEach(function (el) {
         el.addEventListener('click', function () {
             var group = el.closest('.bank-picker');
@@ -1139,12 +1024,12 @@ include 'includes/header.php';
             syncHiddenInputs(document.querySelector('input[name="payment_method"]:checked')?.value || 'cod');
         });
     });
+
     document.querySelectorAll('.bank-picker').forEach(function (g) {
         var checked = g.querySelector('input:checked');
         if (checked) checked.closest('.bank-pick').classList.add('selected');
     });
 
-    /* Card ID input — chỉ số */
     var cardIdInput = document.getElementById('cardIdInput');
     if (cardIdInput) {
         cardIdInput.addEventListener('input', function () {
@@ -1156,9 +1041,7 @@ include 'includes/header.php';
     radios.forEach(function (r) { r.addEventListener('change', updateExtras); });
     updateExtras();
 
-    /* ============================================================
-       Voucher
-       ============================================================ */
+    // Voucher Handlers
     var voucherInput = document.getElementById('voucherCode');
     var checkBtn     = document.getElementById('checkVoucherBtn');
     var msgBox       = document.getElementById('voucherMessage');
@@ -1214,9 +1097,7 @@ include 'includes/header.php';
     var initCode = <?php echo $voucherRow ? "'" . addslashes($voucherRow['code']) . "'" : "''"; ?>;
     updateSummary(initDisc, initCode);
 
-    /* ============================================================
-       DOM refs
-       ============================================================ */
+    // Modal & PIN & Loading Elements
     var form          = document.getElementById('checkoutForm');
     var loadingOv     = document.getElementById('loadingOverlay');
     var loadingBox    = document.getElementById('loadingBox');
@@ -1225,7 +1106,6 @@ include 'includes/header.php';
 
     var otpModal      = document.getElementById('otpModal');
     var otpInputs     = document.querySelectorAll('#otpInputs .otp-input');
-    var otpEmailDisp  = document.getElementById('otpEmailDisplay');
     var btnOtpConfirm = document.getElementById('btnOtpConfirm');
     var otpErrorMsg   = document.getElementById('otpErrorMsg');
     var otpCloseBtn   = document.getElementById('otpCloseBtn');
@@ -1246,9 +1126,6 @@ include 'includes/header.php';
 
     if (!form) return;
 
-    /* ============================================================
-       State
-       ============================================================ */
     var otpVerified = false;
     var otpSending  = false;
     var pinVerified = false;
@@ -1256,9 +1133,6 @@ include 'includes/header.php';
     var pinMode     = 'verify';
     var currentPaymentMethod = 'cod';
 
-    /* ============================================================
-       Helpers: loading
-       ============================================================ */
     function showLoading(text, subtext) {
         loadingBox.classList.remove('is-success');
         if (loadingText) loadingText.textContent = text || 'Đang xử lý...';
@@ -1267,7 +1141,7 @@ include 'includes/header.php';
     }
     function showSuccess(text, subtext) {
         loadingBox.classList.add('is-success');
-        if (loadingText) loadingText.textContent = text || '✅ Thành công!';
+        if (loadingText) loadingText.textContent = text || 'Thành công!';
         if (loadingSub)  loadingSub.textContent  = subtext || '';
         loadingOv?.classList.add('show');
     }
@@ -1277,13 +1151,9 @@ include 'includes/header.php';
     }
     function delayThen(ms, cb) { setTimeout(cb, ms); }
 
-    /* ============================================================
-       OTP modal
-       ============================================================ */
     function openOtpModal() {
         otpModal?.classList.add('show');
         otpErrorMsg.textContent = '';
-        otpErrorMsg.style.color = '';
         otpInputs.forEach(function (i) { i.value = ''; i.classList.remove('filled', 'error'); });
         btnOtpConfirm.disabled = true;
         btnOtpConfirm.textContent = 'XÁC NHẬN OTP';
@@ -1291,9 +1161,6 @@ include 'includes/header.php';
     }
     function closeOtpModal() { otpModal?.classList.remove('show'); }
 
-    /* ============================================================
-       PIN modal
-       ============================================================ */
     function attachPinInputHandlers(inputs, nextGroup) {
         inputs.forEach(function (input, idx) {
             input.addEventListener('input', function () {
@@ -1312,8 +1179,7 @@ include 'includes/header.php';
             });
             input.addEventListener('paste', function (e) {
                 e.preventDefault();
-                var pasted = (e.clipboardData || window.clipboardData).getData('text')
-                    .replace(/\D/g, '').slice(0, 6);
+                var pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 6);
                 if (!pasted) return;
                 for (var i = 0; i < inputs.length; i++) {
                     inputs[i].value = pasted[i] || '';
@@ -1341,8 +1207,7 @@ include 'includes/header.php';
         if (pinMode === 'verify') {
             filled = getPinValue(pinInputsVerify).length === 6;
         } else {
-            filled = getPinValue(pinInputsSetup).length === 6
-                  && getPinValue(pinInputsConfirm).length === 6;
+            filled = getPinValue(pinInputsSetup).length === 6 && getPinValue(pinInputsConfirm).length === 6;
         }
         btnPinConfirm.disabled = !filled;
     }
@@ -1350,8 +1215,6 @@ include 'includes/header.php';
     function openPinModal() {
         pinModal.classList.add('show');
         pinErrorMsg.textContent = '';
-        pinErrorMsg.style.color = '';
-
         clearPinInputs(pinInputsVerify);
         clearPinInputs(pinInputsSetup);
         clearPinInputs(pinInputsConfirm);
@@ -1367,14 +1230,14 @@ include 'includes/header.php';
             pinMode = pinHasPin ? 'verify' : 'setup';
 
             if (pinMode === 'verify') {
-                pinIcon.textContent = '🔐';
+                pinIcon.innerHTML = '<i class="ph ph-lock-key"></i>';
                 pinTitle.textContent = 'Xác minh mã PIN';
                 pinSubtitle.textContent = 'Nhập mã PIN 6 số để xác nhận thanh toán';
                 pinVerifyBlock.hidden = false;
                 pinSetupBlock.hidden = true;
                 setTimeout(function () { pinInputsVerify[0]?.focus(); }, 300);
             } else {
-                pinIcon.textContent = '🆕';
+                pinIcon.innerHTML = '<i class="ph ph-plus-circle"></i>';
                 pinTitle.textContent = 'Thiết lập mã PIN';
                 pinSubtitle.textContent = 'Đây là lần đầu bạn thanh toán. Vui lòng tạo mã PIN 6 số.';
                 pinVerifyBlock.hidden = true;
@@ -1391,100 +1254,107 @@ include 'includes/header.php';
     function closePinModal() {
         pinModal.classList.remove('show');
     }
-/* ============================================================
-   BANK CHOICE MODAL — Sau PIN thành công với bank
-   ============================================================ */
-function showBankChoiceModal() {
-    var modal = document.getElementById('bankChoiceModal');
-    if (modal) modal.classList.add('show');
-    document.body.style.overflow = 'hidden';
-}
 
-function closeBankChoiceModal() {
-    var modal = document.getElementById('bankChoiceModal');
-    if (modal) modal.classList.remove('show');
-    document.body.style.overflow = '';
-}
-
-document.addEventListener('DOMContentLoaded', function () {
-    var btnPay = document.getElementById('btnPayNow');
-    var btnHome = document.getElementById('btnGoHome');
-
-    /* "Thanh toán ngay" → submit form với redirect_after_order = payment */
-    if (btnPay) {
-        btnPay.addEventListener('click', function () {
-            document.getElementById('redirectAfterOrder').value = 'payment';
-            syncHiddenInputs('bank');
-
-            closeBankChoiceModal();
-            showLoading('Đang chuyển tới trang thanh toán...', 'Vui lòng đợi...');
-
-            setTimeout(function () { form.submit(); }, 900);
-        });
+    function showBankChoiceModal() {
+        var modal = document.getElementById('bankChoiceModal');
+        if (modal) modal.classList.add('show');
+        document.body.style.overflow = 'hidden';
     }
 
-    /* "Về trang chủ" → submit form với redirect_after_order = home */
-    if (btnHome) {
-        btnHome.addEventListener('click', function () {
-            document.getElementById('redirectAfterOrder').value = 'home';
-            syncHiddenInputs('bank');
-
-            closeBankChoiceModal();
-            showLoading('Đã đặt hàng thành công!', 'Đang quay về trang chủ...');
-
-            setTimeout(function () { form.submit(); }, 900);
-        });
-    }
-});
-    /* ============================================================
-       proceedAfterPin
-       ============================================================ */
-    function proceedAfterPin(method) {
-    /* ============================================================
-       🆕 BANK — Hiện modal chọn "Thanh toán ngay" hoặc "Về trang chủ"
-       ============================================================ */
-    if (method === 'bank') {
-        showLoading('Đang ghi nhận đơn hàng...', 'Vui lòng không đóng cửa sổ này');
-        delayThen(800, function () {
-            hideLoading();
-            showBankChoiceModal();
-        });
-        return;
+    function closeBankChoiceModal() {
+        var modal = document.getElementById('bankChoiceModal');
+        if (modal) modal.classList.remove('show');
+        document.body.style.overflow = '';
     }
 
-    /* COD / WALLET — Submit ngay như cũ */
-    if (method === 'cod' || method === 'wallet') {
-        var msg = method === 'wallet'
-            ? 'Đang thanh toán bằng ví...'
-            : 'Đang xử lý đơn hàng...';
+    document.addEventListener('DOMContentLoaded', function () {
+        var btnPay = document.getElementById('btnPayNow');
+        var btnHome = document.getElementById('btnGoHome');
 
-        showLoading(msg, 'Vui lòng không đóng cửa sổ này');
-        delayThen(1800, function () {
-            syncHiddenInputs(method);
-            form.submit();
-        });
-        return;
-    }
+        if (btnPay) {
+            btnPay.addEventListener('click', function () {
+                document.getElementById('redirectAfterOrder').value = 'payment';
+                syncHiddenInputs('bank');
+                closeBankChoiceModal();
+                showLoading('Đang chuyển tới trang thanh toán...', 'Vui lòng đợi...');
+                setTimeout(function () { form.submit(); }, 900);
+            });
+        }
 
-    /* ... phần card giữ nguyên ... */
-    if (otpVerified) {
-        showSuccess('✅ Thanh toán thành công!', 'Đang hoàn tất đơn hàng...');
-        delayThen(1500, function () {
-            syncHiddenInputs(method);
-            form.submit();
-        });
-        return;
-    }
-
-    showLoading('Đang kết nối cổng thanh toán...', 'Vui lòng không đóng cửa sổ này');
-    delayThen(1800, function () {
-        // ... code card gửi OTP giữ nguyên
+        if (btnHome) {
+            btnHome.addEventListener('click', function () {
+                document.getElementById('redirectAfterOrder').value = 'home';
+                syncHiddenInputs('bank');
+                closeBankChoiceModal();
+                showLoading('Đã đặt hàng thành công!', 'Đang quay về trang chủ...');
+                setTimeout(function () { form.submit(); }, 900);
+            });
+        }
     });
-}
 
-    /* ============================================================
-       Form submit
-       ============================================================ */
+    function proceedAfterPin(method) {
+        if (method === 'bank') {
+            showLoading('Đang ghi nhận đơn hàng...', 'Vui lòng không đóng cửa sổ này');
+            delayThen(800, function () {
+                hideLoading();
+                showBankChoiceModal();
+            });
+            return;
+        }
+
+        if (method === 'cod' || method === 'wallet') {
+            var msg = method === 'wallet' ? 'Đang thanh toán bằng ví...' : 'Đang xử lý đơn hàng...';
+            showLoading(msg, 'Vui lòng không đóng cửa sổ này');
+            delayThen(1800, function () {
+                syncHiddenInputs(method);
+                form.submit();
+            });
+            return;
+        }
+
+        // === SỬA LẠI LOGIC CHO THẺ (CARD) ===
+        if (otpVerified) {
+            showSuccess('Thanh toán thành công!', 'Đang hoàn tất đơn hàng...');
+            delayThen(1500, function () {
+                syncHiddenInputs(method);
+                form.submit();
+            });
+            return;
+        }
+
+        // GỌI API GỬI OTP TRƯỚC KHI MỞ MODAL
+        showLoading('Đang kết nối cổng thanh toán...', 'Đang gửi mã OTP tới email');
+        delayThen(1000, function () {
+            fetch('ajax/otp_handler.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'action=send' // Báo backend tạo và gửi OTP
+            })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                hideLoading();
+                if (data.ok) {
+                    // Lấy đúng key email_mask từ PHP trả về
+                    document.getElementById('otpEmailDisplay').textContent = data.email_mask || '*******';
+                    
+                    // Nếu có mã dự phòng (do lỗi gửi mail ở localhost), in ra console để test
+                    if (data.otp_fallback) {
+                        console.warn('⚠️ CHẾ ĐỘ DEMO - Mã OTP của bạn là: ' + data.otp_fallback);
+                        // Bạn có thể alert(data.otp_fallback) nếu đang test ở máy local
+                    }
+                    
+                    openOtpModal();
+                } else {
+                    alert(data.msg || 'Không thể gửi mã OTP. Vui lòng thử lại.');
+                }
+            })
+            .catch(function() {
+                hideLoading();
+                alert('Lỗi kết nối máy chủ khi gửi OTP.');
+            });
+        });
+    }
+
     form.addEventListener('submit', function (e) {
         e.preventDefault();
 
@@ -1528,9 +1398,7 @@ document.addEventListener('DOMContentLoaded', function () {
         proceedAfterPin(method);
     });
 
-    /* ============================================================
-       OTP handlers
-       ============================================================ */
+    // OTP Handlers
     otpInputs.forEach(function (input, idx) {
         input.addEventListener('input', function () {
             this.value = this.value.replace(/\D/g, '');
@@ -1542,19 +1410,6 @@ document.addEventListener('DOMContentLoaded', function () {
         });
         input.addEventListener('keydown', function (e) {
             if (e.key === 'Backspace' && !this.value && idx > 0) otpInputs[idx - 1].focus();
-            if (e.key === 'ArrowLeft' && idx > 0) otpInputs[idx - 1].focus();
-            if (e.key === 'ArrowRight' && idx < otpInputs.length - 1) otpInputs[idx + 1].focus();
-        });
-        input.addEventListener('paste', function (e) {
-            e.preventDefault();
-            var pasted = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '').slice(0, 6);
-            if (!pasted) return;
-            for (var i = 0; i < otpInputs.length; i++) {
-                otpInputs[i].value = pasted[i] || '';
-                otpInputs[i].classList.toggle('filled', !!pasted[i]);
-            }
-            otpInputs[Math.min(pasted.length, otpInputs.length - 1)].focus();
-            checkAllFilled();
         });
     });
 
@@ -1581,17 +1436,13 @@ document.addEventListener('DOMContentLoaded', function () {
             if (data.ok) {
                 otpVerified = true;
                 closeOtpModal();
-                showSuccess('✅ Thanh toán thành công!', 'Đang hoàn tất đơn hàng...');
+                showSuccess('Thanh toán thành công!', 'Đang hoàn tất đơn hàng...');
                 delayThen(1800, function () {
                     syncHiddenInputs('card');
                     form.submit();
                 });
             } else {
                 otpErrorMsg.textContent = data.msg || 'Mã không đúng.';
-                otpInputs.forEach(function (i) {
-                    i.classList.add('error');
-                    setTimeout(function () { i.classList.remove('error'); }, 400);
-                });
                 btnOtpConfirm.disabled = false;
                 btnOtpConfirm.textContent = 'XÁC NHẬN OTP';
             }
@@ -1606,45 +1457,10 @@ document.addEventListener('DOMContentLoaded', function () {
     otpCloseBtn?.addEventListener('click', function () {
         if (confirm('Bạn muốn hủy xác minh? Đơn hàng sẽ không được đặt.')) {
             closeOtpModal();
-            otpErrorMsg.textContent = '';
         }
     });
 
-    resendOtpBtn?.addEventListener('click', function () {
-        if (otpSending) return;
-        otpSending = true;
-        otpErrorMsg.textContent = '';
-        otpErrorMsg.style.color = '';
-
-        fetch('ajax/otp_handler.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'action=send'
-        })
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-            otpSending = false;
-            if (data.ok) {
-                otpInputs.forEach(function (i) { i.value = ''; i.classList.remove('filled', 'error'); });
-                btnOtpConfirm.disabled = true;
-                btnOtpConfirm.textContent = 'XÁC NHẬN OTP';
-                otpInputs[0]?.focus();
-                otpErrorMsg.textContent = '✅ Đã gửi lại mã mới tới email của bạn.';
-                otpErrorMsg.style.color = '#166534';
-            } else {
-                otpErrorMsg.textContent = data.msg || 'Không thể gửi lại.';
-                otpErrorMsg.style.color = '';
-            }
-        })
-        .catch(function () {
-            otpSending = false;
-            otpErrorMsg.textContent = 'Không thể kết nối tới máy chủ.';
-        });
-    });
-
-    /* ============================================================
-       PIN confirm
-       ============================================================ */
+    // PIN Handlers
     btnPinConfirm?.addEventListener('click', function () {
         var pin, pinConfirm = '', action;
 
@@ -1673,26 +1489,14 @@ document.addEventListener('DOMContentLoaded', function () {
             if (data.ok) {
                 pinVerified = true;
                 closePinModal();
-
                 proceedAfterPin(currentPaymentMethod);
             } else {
                 pinErrorMsg.textContent = data.msg || 'Có lỗi xảy ra.';
-                pinErrorMsg.style.color = '';
-
-                (pinMode === 'verify' ? pinInputsVerify : pinInputsSetup).forEach(function (i) {
-                    i.classList.add('error');
-                    setTimeout(function () { i.classList.remove('error'); }, 400);
-                });
-
                 clearPinInputs(pinInputsVerify);
                 clearPinInputs(pinInputsSetup);
                 clearPinInputs(pinInputsConfirm);
                 btnPinConfirm.disabled = true;
                 btnPinConfirm.textContent = 'XÁC NHẬN PIN';
-                setTimeout(function () {
-                    if (pinMode === 'verify') pinInputsVerify[0]?.focus();
-                    else pinInputsSetup[0]?.focus();
-                }, 300);
             }
         })
         .catch(function () {
@@ -1710,33 +1514,5 @@ document.addEventListener('DOMContentLoaded', function () {
 
 })();
 </script>
-<!-- MODAL BANK CHOICE — Sau khi PIN thành công với phương thức bank -->
-<div class="bank-choice-overlay" id="bankChoiceModal" aria-hidden="true">
-    <div class="bank-choice-box" role="dialog" aria-modal="true">
 
-        <div class="bank-choice-icon">✓</div>
-
-        <h2 class="bank-choice-title">Đơn hàng đã sẵn sàng!</h2>
-
-        <p class="bank-choice-desc">
-            Xác minh mã PIN thành công. Bạn muốn làm gì tiếp theo?
-        </p>
-
-        <p class="bank-choice-subdesc">
-            <b>Thanh toán ngay</b> để hoàn tất đơn hàng,<br>
-            hoặc <b>Về trang chủ</b> để thanh toán sau.
-        </p>
-
-        <div class="bank-choice-actions">
-            <button type="button" class="bank-choice-btn bank-choice-btn--primary" id="btnPayNow">
-                <span class="bank-choice-icon--pay"></span>
-                Thanh toán ngay
-            </button>
-
-            <button type="button" class="bank-choice-btn bank-choice-btn--ghost" id="btnGoHome">
-                 Về trang chủ
-            </button>
-        </div>
-    </div>
-</div>
 <?php include 'includes/footer.php'; ?>

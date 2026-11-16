@@ -34,7 +34,7 @@ if (isset($_SESSION['cart']) && is_array($_SESSION['cart'])) {
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/lucide@latest"></script>
-    
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
     <link rel="stylesheet" href="css/style.css">
 
     <!-- CSS Header Tùy Chỉnh -->
@@ -101,14 +101,16 @@ if (isset($_SESSION['cart']) && is_array($_SESSION['cart'])) {
         }
 
         /* --- Navigation Menu --- */
-        .nav-menu {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            list-style: none;
-            margin: 0;
-            padding: 0;
-        }
+.nav-menu {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    position: relative; /* Thêm dòng này */
+    z-index: 1002;      /* Thêm dòng này */
+}
 
         .nav-link {
             position: relative;
@@ -132,24 +134,26 @@ if (isset($_SESSION['cart']) && is_array($_SESSION['cart'])) {
         /* --- Dropdown Danh Mục --- */
         .nav-dropdown {
             position: relative;
+            z-index: 1002; 
         }
 
-        .dropdown-menu {
-            position: absolute;
-            top: 100%;
-            left: 0;
-            width: 240px;
-            background: #ffffff;
-            border: 1px solid var(--header-border);
-            border-radius: 12px;
-            box-shadow: 0 15px 30px -5px rgba(0,0,0,0.1);
-            padding: 0.5rem;
-            opacity: 0;
-            visibility: hidden;
-            transform: translateY(10px);
-            transition: all 0.2s ease;
-            list-style: none;
-        }
+.dropdown-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 240px;
+    background: #ffffff;
+    border: 1px solid var(--header-border);
+    border-radius: 12px;
+    box-shadow: 0 15px 30px -5px rgba(0,0,0,0.1);
+    padding: 0.5rem;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(10px);
+    transition: all 0.2s ease;
+    list-style: none;
+    z-index: 1001;
+}
 
         .nav-dropdown:hover .dropdown-menu {
             opacity: 1;
