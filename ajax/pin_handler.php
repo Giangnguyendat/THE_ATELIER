@@ -1,9 +1,9 @@
 <?php
 /**
- * Xử lý mã PIN 6 số cho thanh toán COD
+ * Xử lý mã PIN 6 số
  * - action=status  : kiểm tra user đã có PIN chưa
  * - action=set     : tạo PIN lần đầu (yêu cầu xác nhận 2 lần)
- * - action=verify  : xác minh PIN khi thanh toán
+ * - action=verify  : xác minh PIN (dùng cho Checkout, Settings, Wallet)
  */
 require_once '../includes/config.php';
 
@@ -16,6 +16,7 @@ if (!isLoggedIn()) {
 
 $action = $_POST['action'] ?? '';
 $userId = (int)$_SESSION['user_id'];
+$context = $_POST['context'] ?? 'checkout'; // Mặc định là checkout
 
 /* Helper: lấy user hiện tại */
 function getCurrentUser(PDO $pdo, int $userId): ?array {
@@ -70,8 +71,13 @@ if ($action === 'set') {
     ");
     $stmt->execute([$hash, $userId]);
 
-    // Đánh dấu đã verify trong session (không cần nhập lại khi vừa tạo)
+    // Đánh dấu đã verify trong session
     $_SESSION['pin_verified'] = true;
+
+    // Nếu thiết lập từ trang Ví (Wallet) -> Tự động mở khóa ví 15 phút
+    if ($context === 'wallet') {
+        $_SESSION['wallet_unlocked_until'] = time() + (15 * 60);
+    }
 
     echo json_encode([
         'ok'  => true,
@@ -139,14 +145,19 @@ if ($action === 'verify') {
     $pdo->prepare("UPDATE users SET pin_attempts = 0, pin_locked_until = NULL WHERE id = ?")
         ->execute([$userId]);
 
-    // ✅ Hỗ trợ context — checkout (mặc định) hoặc settings
-$context = $_POST['context'] ?? 'checkout';
-$sessionKey = ($context === 'settings') ? 'settings_pin_verified' : 'pin_verified';
-$_SESSION[$sessionKey] = true;
+    // Cấp quyền truy cập dựa trên Context
+    if ($context === 'settings') {
+        $_SESSION['settings_pin_verified'] = true;
+    } elseif ($context === 'wallet') {
+        $_SESSION['wallet_unlocked_until'] = time() + (15 * 60); // Mở khóa ví 15 phút
+        $_SESSION['pin_verified'] = true; 
+    } else {
+        // Mặc định cho luồng Checkout
+        $_SESSION['pin_verified'] = true;
+    }
 
     echo json_encode(['ok' => true, 'msg' => 'Xác minh PIN thành công.']);
     exit;
 }
 
 echo json_encode(['ok' => false, 'msg' => 'Action không hợp lệ.']);
-/** @var PDO $pdo */  // <-- Thêm dòng này để Intelephense hiểu $pdo là biến toàn cục

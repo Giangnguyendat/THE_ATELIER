@@ -16,9 +16,11 @@ if (empty($_SESSION['csrf_token'])) {
    1. LẤY DỮ LIỆU
    ============================================================ */
 
-$stmtUser = $pdo->prepare("SELECT full_name, email, phone, address, created_at FROM users WHERE id = ?");
+$stmtUser = $pdo->prepare("SELECT full_name, email, phone, address, created_at, payment_pin FROM users WHERE id = ?");
 $stmtUser->execute([$userId]);
 $user = $stmtUser->fetch(PDO::FETCH_ASSOC) ?: [];
+
+$hasPin = !empty($user['payment_pin']);
 
 $_SESSION['user']  = array_merge($_SESSION['user'] ?? [], $user);
 $_SESSION['email'] = $user['email'] ?? '';
@@ -658,6 +660,11 @@ function renderOrderCard(
                     <i class="ph ph-pencil-simple"></i> Sửa thông tin cá nhân
                 </button>
 
+                <!-- NÚT THIẾT LẬP / ĐỔI MÃ PIN -->
+                <button type="button" class="btn-edit-profile" style="background: #fff; color: #1c1b19; border: 1px solid #1c1b19; margin-bottom: 20px;" onclick="openSetupPinModal()">
+                    <i class="ph ph-lock-key"></i> <?php echo $hasPin ? 'Đổi mã PIN thanh toán' : 'Thiết lập mã PIN'; ?>
+                </button>
+
                 <a href="logout.php" style="display:flex;align-items:center;justify-content:center;gap:8px;text-align:center;background:#fff1f0;color:#ff4d4f;padding:10px;border-radius:8px;text-decoration:none;font-weight:600;border:1px solid #ffa39e;">
                     <i class="ph ph-sign-out"></i> Đăng xuất
                 </a>
@@ -719,6 +726,39 @@ function renderOrderCard(
         </div>
     </div>
 </main>
+
+<!-- ============ MODAL THIẾT LẬP / ĐỔI MÃ PIN ============ -->
+<div class="modal-overlay" id="setupPinModal" aria-hidden="true">
+    <div class="modal-content" style="max-width:420px;padding:2rem;">
+        <button type="button" class="modal-close" onclick="closeSetupPin()"><i class="ph ph-x"></i></button>
+        <div style="text-align:center;margin-bottom:20px;">
+            <div style="width:64px;height:64px;border-radius:50%;background:#eff6ff;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;">
+                <i class="ph-fill ph-shield-check" style="font-size:2rem; color:#1d4ed8;"></i>
+            </div>
+            <h2 class="modal-title" style="margin:0 0 6px; font-size:1.4rem; justify-content:center;">
+                <?php echo $hasPin ? 'Đổi mã PIN' : 'Thiết lập mã PIN'; ?>
+            </h2>
+            <p style="font-size:0.85rem;color:#6b7280;margin:0;">
+                Mã PIN 6 số dùng để bảo vệ ví điện tử và thanh toán
+            </p>
+        </div>
+
+        <div id="setupPinErr" style="background:#fef2f2;border:1px solid #fecaca;color:#991b1b;padding:10px;border-radius:8px;margin-bottom:14px;font-size:0.85rem;display:none;"></div>
+
+        <div style="margin-bottom:14px;">
+            <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;text-align:center;">Nhập mã PIN mới</label>
+            <input type="password" id="newPin" maxlength="6" inputmode="numeric" placeholder="••••••" autocomplete="off" style="width:100%;padding:14px;text-align:center;letter-spacing:0.8em;font-size:1.4rem;font-family:'IBM Plex Mono',monospace;border:1px solid #d1d5db;border-radius:8px;">
+        </div>
+        <div style="margin-bottom:20px;">
+            <label style="display:block;font-size:13px;font-weight:600;color:#374151;margin-bottom:6px;text-align:center;">Nhập lại mã PIN</label>
+            <input type="password" id="confirmPin" maxlength="6" inputmode="numeric" placeholder="••••••" autocomplete="off" style="width:100%;padding:14px;text-align:center;letter-spacing:0.8em;font-size:1.4rem;font-family:'IBM Plex Mono',monospace;border:1px solid #d1d5db;border-radius:8px;">
+        </div>
+
+        <button type="button" id="btnSavePin" onclick="submitSetupPin()" style="width:100%;padding:14px;background:#1d4ed8;color:#fff;border:none;border-radius:8px;font-weight:700;font-size:1rem;cursor:pointer;">
+            Xác nhận
+        </button>
+    </div>
+</div>
 
 <!-- ============ MODAL SỬA THÔNG TIN CÁ NHÂN ============ -->
 <div class="modal-overlay" id="editProfileModal" aria-hidden="true">
@@ -1102,7 +1142,7 @@ function closeReturnWaybill() {
 }
 
 /* ============================================================
-   MODAL + AJAX
+   MODAL + AJAX + SETUP PIN
    ============================================================ */
 (function () {
     function showToast(msg, isError) {
@@ -1117,6 +1157,80 @@ function closeReturnWaybill() {
         toast.className = 'order-toast show' + (isError ? ' error' : '');
         setTimeout(function () { toast.className = 'order-toast'; }, 3500);
     }
+
+    /* ============================================================
+       THIẾT LẬP MÃ PIN
+       ============================================================ */
+    window.openSetupPinModal = function() {
+        var modal = document.getElementById('setupPinModal');
+        if (!modal) return;
+        modal.classList.add('show');
+        document.body.style.overflow = 'hidden';
+        document.getElementById('newPin').value = '';
+        document.getElementById('confirmPin').value = '';
+        document.getElementById('setupPinErr').style.display = 'none';
+        setTimeout(function() { document.getElementById('newPin').focus(); }, 100);
+    };
+
+    window.closeSetupPin = function() {
+        var modal = document.getElementById('setupPinModal');
+        if (!modal) return;
+        modal.classList.remove('show');
+        document.body.style.overflow = '';
+    };
+
+    window.submitSetupPin = async function() {
+        var newPin = document.getElementById('newPin').value.trim();
+        var confirmPin = document.getElementById('confirmPin').value.trim();
+        var errEl = document.getElementById('setupPinErr');
+        var btn = document.getElementById('btnSavePin');
+
+        errEl.style.display = 'none';
+
+        if (!/^\d{6}$/.test(newPin)) {
+            errEl.textContent = 'Mã PIN phải là 6 chữ số.';
+            errEl.style.display = 'block';
+            return;
+        }
+        if (newPin !== confirmPin) {
+            errEl.textContent = 'Mã PIN xác nhận không khớp.';
+            errEl.style.display = 'block';
+            return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Đang lưu...';
+
+        var fd = new FormData();
+        fd.append('action', 'set');
+        fd.append('pin', newPin);
+        fd.append('pin_confirm', confirmPin);
+        fd.append('context', 'settings');
+
+        try {
+            var res = await fetch('ajax/pin_handler.php', {
+                method: 'POST',
+                body: fd
+            });
+            var data = await res.json();
+            
+            if (data.ok) {
+                btn.textContent = '✓ Thành công!';
+                btn.style.background = '#166534';
+                setTimeout(function() { location.reload(); }, 1000);
+            } else {
+                errEl.textContent = data.msg || 'Có lỗi xảy ra.';
+                errEl.style.display = 'block';
+                btn.disabled = false;
+                btn.textContent = 'Xác nhận';
+            }
+        } catch (e) {
+            errEl.textContent = 'Lỗi kết nối máy chủ.';
+            errEl.style.display = 'block';
+            btn.disabled = false;
+            btn.textContent = 'Xác nhận';
+        }
+    };
 
     /* ============================================================
        MODAL SỬA THÔNG TIN CÁ NHÂN
@@ -1525,6 +1639,7 @@ function closeReturnWaybill() {
         if (editModal.classList.contains('show'))   closeEdit();
         if (cancelModal.classList.contains('show')) closeCancel();
         if (reviewModal.classList.contains('show')) closeReview();
+        if (document.getElementById('setupPinModal').classList.contains('show')) closeSetupPin();
         if (document.getElementById('returnWaybillModal').style.display === 'flex') closeReturnWaybill();
     });
 })();

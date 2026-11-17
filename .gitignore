@@ -2,3 +2,4 @@ ca.pem
 includes/secrets.php
 .env
 includes/secrets.php
+includes/secret.php
